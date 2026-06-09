@@ -4,6 +4,11 @@
       "command": "python",
       "args": ["mcp_server/server.py"],
       "cwd": "C:\\Users\\39357\\Desktop\\客服智能体"
+    },
+    "git-agent": {
+      "command": "python",
+      "args": ["mcp_server/git_server.py"],
+      "cwd": "C:\\Users\\39357\\Desktop\\客服智能体"
     }
   }
 }

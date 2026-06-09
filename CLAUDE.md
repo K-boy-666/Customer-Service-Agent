@@ -128,3 +128,7 @@ Label vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-hu
 ### Domain docs
 
 Single-context layout — one global `CONTEXT.md` and one `docs/adr/` directory at the repository root. See `docs/agents/domain.md`.
+
+### Git agent
+
+专职 Git 版本控制子代理（`git-agent`），负责仓库状态查询、安全操作、冲突处理、commit/PR 文案生成。调用方式：`Agent` 工具，`subagent_type: "git-agent"`。定义文件：`.claude/agents/git-agent.md`。
