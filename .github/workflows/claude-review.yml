@@ -21,8 +21,7 @@ jobs:
           chat-token: ${{ secrets.CHAT_TOKEN }}
           model: deepseek-v4-flash
           temperature: 0.3
-          exclude-patterns: >
-            pnpm-lock.yaml,package-lock.json,*.lock,*.min.js,dist/**,node_modules/**
+          exclude-patterns: 'pnpm-lock.yaml,package-lock.json,*.lock,*.min.js'
           sys-prompt: |
             你是一位资深代码审查专家，负责分析 GitHub Pull Request 的代码变更。
             请用中文回复，按以下分类列出发现的问题：
