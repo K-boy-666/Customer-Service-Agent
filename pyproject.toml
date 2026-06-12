@@ -1,0 +1,15 @@
+[project]
+name = "mcp-order-server"
+version = "0.1.0"
+description = "MCP server for querying a local order REST API"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=3.0.0",
+    "httpx>=0.27.0",
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[project.scripts]
+order-server = "server:main"
+seed-orders = "seed_data:main"

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "order-server": {
+      "command": "python",
+      "args": ["server.py"],
+      "cwd": "${workspaceFolder}"
+    }
+  },
+  "permissions": {
+    "allow": [
+      "mcp__order-server__search_orders",
+      "mcp__order-server__get_order",
+      "mcp__order-server__list_orders",
+      "mcp__order-server__get_orders_by_date",
+      "mcp__order-server__get_orders_by_customer",
+      "mcp__order-server__get_order_stats"
+    ]
+  }
+}
