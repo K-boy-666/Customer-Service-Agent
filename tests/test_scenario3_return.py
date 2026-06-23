@@ -1,88 +1,64 @@
-"""
-Test Scenario 3: 售后退款申请 - L1操作测试
-Simulates customer saying: "我买的无线鼠标右键不灵敏，订单号是 ORD-20260601-001，我要申请退款"
-Core validation: create_return tool successfully called and returns RMA number.
+"""Scenario 3: after-sales refund request through secured service layer."""
 
-This script directly inserts a return record into the database,
-simulating what the create_return API endpoint / MCP tool does.
-"""
-import sqlite3
+from __future__ import annotations
+
 import os
 import sys
-from datetime import datetime
+import tempfile
+import unittest
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "orders.db")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-conn = sqlite3.connect(DB_PATH)
-conn.row_factory = sqlite3.Row
+import database
+import seed_data
+import service_layer as svc
+from models import Order
+from security import Actor, load_verification, request_otp, verify_otp
 
-try:
-    # Step 1: Verify order exists
-    order = conn.execute(
-        "SELECT id, customer_id, status FROM orders WHERE id = ?",
-        ("ORD-20260601-001",),
-    ).fetchone()
 
-    if order is None:
-        print("[FAIL] Order ORD-20260601-001 not found in database!")
-        exit(1)
+class Scenario3ReturnTest(unittest.TestCase):
+    def setUp(self) -> None:
+        fd, self.db_path = tempfile.mkstemp(prefix="scenario3-", suffix=".db")
+        os.close(fd)
+        os.environ["DATABASE_URL"] = "sqlite+pysqlite:///" + self.db_path.replace("\\", "/")
+        database.reset_engine_for_tests()
+        database.init_db()
+        session = database.get_session()
+        try:
+            seed_data.seed(session)
+        finally:
+            session.close()
 
-    print(f"[OK] Order found: id={order['id']}, customer_id={order['customer_id']}, status={order['status']}")
+    def tearDown(self) -> None:
+        database.reset_engine_for_tests("sqlite+pysqlite:///:memory:")
+        for suffix in ("", "-wal", "-shm"):
+            path = f"{self.db_path}{suffix}"
+            if os.path.exists(path):
+                os.remove(path)
 
-    # Step 2: Generate return number (RMA-YYYYMMDD-NNN)
-    today = datetime.now().strftime("%Y%m%d")
-    prefix = f"RMA-{today}-"
-    row = conn.execute(
-        "SELECT return_number FROM returns WHERE return_number LIKE ? ORDER BY return_number DESC LIMIT 1",
-        (f"{prefix}%",),
-    ).fetchone()
-    if row:
-        seq = int(row["return_number"].rsplit("-", 1)[-1]) + 1
-    else:
-        seq = 1
-    return_number = f"{prefix}{seq:03d}"
+    def test_refund_request_created_with_rma_number(self):
+        session = database.get_session()
+        try:
+            order = session.query(Order).filter_by(status="delivered").first()
+            challenge = request_otp(session, "customer_identity", "email", "test@example.com", order.customer_id, order.id)
+            verified = verify_otp(session, challenge["challenge_id"], challenge["dev_code"])
+            verification = load_verification(session, verified["verification_token"])
+            ret = svc.create_return(
+                session,
+                Actor("after-sales-test", "after_sales", {}),
+                order.id,
+                "refund",
+                "无线鼠标右键不灵敏",
+                "客户反馈商品右键不灵敏，申请仅退款。",
+                order.customer_id,
+                verification,
+            )
+            self.assertTrue(ret["return_number"].startswith("RMA-"))
+            self.assertEqual(ret["type"], "refund")
+            self.assertEqual(ret["status"], "pending")
+        finally:
+            session.close()
 
-    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
-    # Step 3: Insert return record (type=refund, reason=无线鼠标右键不灵敏)
-    conn.execute(
-        """INSERT INTO returns (return_number, order_id, customer_id, type, reason,
-           description, status, created_at, updated_at)
-           VALUES (?, ?, ?, 'refund', ?, ?, 'pending', ?, ?)""",
-        (
-            return_number,
-            "ORD-20260601-001",
-            order["customer_id"],
-            "无线鼠标右键不灵敏",
-            f"客户反馈无线鼠标右键不灵敏（订单ORD-20260601-001实际为机械键盘RGB，已与客户确认产品问题）。申请仅退款。",
-            now,
-            now,
-        ),
-    )
-    conn.commit()
-
-    new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-    # Step 4: Verify the record was created
-    ret = conn.execute("SELECT * FROM returns WHERE id = ?", (new_id,)).fetchone()
-    assert ret is not None, "Return record should exist"
-    assert ret["return_number"] == return_number, f"Return number mismatch"
-    assert ret["type"] == "refund", f"Type should be refund, got {ret['type']}"
-    assert ret["status"] == "pending", f"Status should be pending, got {ret['status']}"
-
-    print(f"\n{'='*60}")
-    print("  RETURN (REFUND) CREATED SUCCESSFULLY")
-    print(f"{'='*60}")
-    print(f"  ID:             {new_id}")
-    print(f"  Return Number:  {return_number}")
-    print(f"  Order:          ORD-20260601-001")
-    print(f"  Customer ID:    {order['customer_id']}")
-    print(f"  Type:           refund (仅退款)")
-    print(f"  Reason:         无线鼠标右键不灵敏")
-    print(f"  Status:         pending (待审核)")
-    print(f"  Created:        {now}")
-    print(f"{'='*60}")
-    print(f"\n[TEST-3-RESULT: 成功] create_return 工具成功调用，RMA单号：{return_number}")
-
-finally:
-    conn.close()
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

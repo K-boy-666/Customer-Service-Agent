@@ -1,978 +1,378 @@
-"""
-Order REST API — SQLite-backed server with realistic sample data.
+"""Production-oriented REST API for the customer-service platform."""
 
-Run with: uvicorn order_api:app --reload --port 8000
-"""
+from __future__ import annotations
 
-import sqlite3
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Iterator
 
 import database
 import seed_data
-from fastapi import FastAPI, HTTPException, Query
+import service_layer as svc
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
-
-# ---------------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------------
+from orchestrator_api import respond_to_customer_message
+from security import (
+    Actor,
+    actor_dependency,
+    customer_destination,
+    load_verification,
+    request_id_dependency,
+    request_otp,
+    require_idempotency_key,
+    require_permission,
+    run_idempotent,
+    verify_otp,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database and seed on first run."""
     database.init_db()
     if database.is_db_empty():
-        seed_data.seed(database.get_db())
+        session = database.get_session()
+        try:
+            seed_data.seed(session)
+        finally:
+            session.close()
     yield
 
 
-app = FastAPI(title="Order API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Order API", version="1.0.0", lifespan=lifespan)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _build_order_dict(row: sqlite3.Row, items: list[dict]) -> dict[str, Any]:
-    """Assemble an order response dict from a DB row and its line items."""
-    return {
-        "id": row["id"],
-        "order_number": row["order_number"],
-        "customer_name": row["customer_name"],
-        "customer_email": row["customer_email"],
-        "status": row["status"],
-        "total_amount": row["total_amount"],
-        "currency": row["currency"],
-        "items": items,
-        "shipping_address": row["shipping_address"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
-
-
-def _fetch_items_for_orders(order_ids: list[str]) -> dict[str, list[dict]]:
-    """Batch-fetch line items for a list of order IDs.
-
-    Returns a dict mapping order_id → list of item dicts.
-    """
-    if not order_ids:
-        return {}
-    db = database.get_db()
+def db_session() -> Iterator[Session]:
+    session = database.get_session()
     try:
-        placeholders = ",".join("?" for _ in order_ids)
-        rows = db.execute(
-            f"SELECT * FROM order_items WHERE order_id IN ({placeholders}) ORDER BY id",
-            order_ids,
-        ).fetchall()
-        result: dict[str, list[dict]] = {oid: [] for oid in order_ids}
-        for r in rows:
-            result[r["order_id"]].append({
-                "sku": r["sku"],
-                "name": r["name"],
-                "qty": r["qty"],
-                "price": r["price"],
-            })
-        return result
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     finally:
-        db.close()
+        session.close()
 
 
-# ---------------------------------------------------------------------------
-# Endpoints — Orders
-# ---------------------------------------------------------------------------
+class OrchestratorRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    customer_id: int | None = None
+    order_id: str | None = None
+    conversation_id: str | None = None
+
+
+class OtpRequest(BaseModel):
+    purpose: str = "customer_identity"
+    channel: str = "email"
+    destination: str | None = None
+    customer_id: int | None = None
+    order_id: str | None = None
+
+
+class OtpVerifyRequest(BaseModel):
+    challenge_id: str
+    code: str
+
+
+def _model_dump(payload: BaseModel) -> dict[str, Any]:
+    return payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+
+
+def _verification(session: Session, token: str | None):
+    return load_verification(session, token)
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "database_url": database.get_database_url().split("@")[-1]}
+
+
+@app.post("/api/auth/otp/request")
+def otp_request(payload: OtpRequest, session: Session = Depends(db_session)):
+    destination = customer_destination(session, payload.customer_id, payload.channel, payload.destination)
+    return request_otp(
+        session,
+        purpose=payload.purpose,
+        channel=payload.channel,
+        destination=destination,
+        customer_id=payload.customer_id,
+        order_id=payload.order_id,
+    )
+
+
+@app.post("/api/auth/otp/verify")
+def otp_verify(payload: OtpVerifyRequest, session: Session = Depends(db_session)):
+    return verify_otp(session, payload.challenge_id, payload.code)
+
+
+@app.post("/api/orchestrator/respond")
+def orchestrator_respond(
+    payload: OrchestratorRequest,
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
+):
+    require_permission(actor, "orchestrator:invoke")
+    verification = load_verification(session, verification_token) if verification_token else None
+    result = respond_to_customer_message(
+        _model_dump(payload),
+        actor=actor,
+        verification=verification,
+        idempotency_key=idempotency_key or "",
+        request_id=request_id,
+    )
+    return result
 
 
 @app.get("/api/orders/search")
-def search_orders(
-    q: str = Query(..., description="Search keyword"),
-    limit: int = Query(20, ge=1, le=100),
-):
-    """Search orders by keyword across order number, customer, item name, etc."""
-    db = database.get_db()
-    try:
-        like = f"%{q}%"
-        rows = db.execute(
-            """SELECT DISTINCT o.*, c.name AS customer_name, c.email AS customer_email
-               FROM orders o
-               JOIN customers c ON o.customer_id = c.id
-               LEFT JOIN order_items oi ON o.id = oi.order_id
-               WHERE o.order_number LIKE ?1
-                  OR c.name LIKE ?1
-                  OR c.email LIKE ?1
-                  OR CAST(o.total_amount AS TEXT) LIKE ?1
-                  OR oi.name LIKE ?1
-                  OR oi.sku LIKE ?1
-               ORDER BY o.created_at DESC
-               LIMIT ?2""",
-            (like, limit),
-        ).fetchall()
-
-        order_ids = [r["id"] for r in rows]
-        items_map = _fetch_items_for_orders(order_ids)
-        results = [_build_order_dict(r, items_map[r["id"]]) for r in rows]
-        return {"data": results, "total": len(results)}
-    finally:
-        db.close()
+def search_orders(q: str = Query(...), limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.search_orders(session, actor, q, limit)
 
 
 @app.get("/api/orders/stats")
-def get_order_stats(
-    period: str = Query("today", description="today|yesterday|this_week|this_month|last_month|all"),
-):
-    """Get aggregate order statistics."""
-    now = datetime.now()
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    if period == "yesterday":
-        start = start - timedelta(days=1)
-    elif period == "this_week":
-        start = start - timedelta(days=start.weekday())
-    elif period == "this_month":
-        start = start.replace(day=1)
-    elif period == "last_month":
-        first = start.replace(day=1)
-        start = (first - timedelta(days=1)).replace(day=1)
-    elif period == "all":
-        start = datetime(2000, 1, 1)
-
-    db = database.get_db()
-    try:
-        rows = db.execute(
-            """SELECT status, COUNT(*) AS cnt, SUM(total_amount) AS revenue
-               FROM orders
-               WHERE created_at >= ?
-               GROUP BY status""",
-            (start.isoformat(),),
-        ).fetchall()
-
-        by_status: dict[str, int] = {}
-        total_revenue = 0.0
-        total_count = 0
-        for r in rows:
-            by_status[r["status"]] = r["cnt"]
-            total_count += r["cnt"]
-            if r["status"] != "cancelled":
-                total_revenue += r["revenue"] or 0.0
-
-        return {
-            "period": period,
-            "total_count": total_count,
-            "total_revenue": round(total_revenue, 2),
-            "by_status": by_status,
-        }
-    finally:
-        db.close()
+def get_order_stats(actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.get_order_stats(session, actor)
 
 
 @app.get("/api/orders/by-customer")
-def get_orders_by_customer(
-    customer: str = Query(...),
-    limit: int = Query(20, ge=1, le=100),
-):
-    """Get orders by customer name or email (partial match)."""
-    db = database.get_db()
-    try:
-        like = f"%{customer}%"
-        rows = db.execute(
-            """SELECT o.*, c.name AS customer_name, c.email AS customer_email
-               FROM orders o
-               JOIN customers c ON o.customer_id = c.id
-               WHERE c.name LIKE ? OR c.email LIKE ?
-               ORDER BY o.created_at DESC
-               LIMIT ?""",
-            (like, like, limit),
-        ).fetchall()
-
-        order_ids = [r["id"] for r in rows]
-        items_map = _fetch_items_for_orders(order_ids)
-        results = [_build_order_dict(r, items_map[r["id"]]) for r in rows]
-        return {"data": results, "total": len(results)}
-    finally:
-        db.close()
-
-
-@app.get("/api/orders/{order_id}")
-def get_order(order_id: str):
-    """Fetch a single order by ID."""
-    db = database.get_db()
-    try:
-        row = db.execute(
-            """SELECT o.*, c.name AS customer_name, c.email AS customer_email
-               FROM orders o
-               JOIN customers c ON o.customer_id = c.id
-               WHERE o.id = ?""",
-            (order_id,),
-        ).fetchone()
-
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"Order '{order_id}' not found")
-
-        items = db.execute(
-            "SELECT * FROM order_items WHERE order_id = ? ORDER BY id",
-            (order_id,),
-        ).fetchall()
-        item_dicts = [
-            {"sku": it["sku"], "name": it["name"], "qty": it["qty"], "price": it["price"]}
-            for it in items
-        ]
-        return _build_order_dict(row, item_dicts)
-    finally:
-        db.close()
+def get_orders_by_customer(customer: str = Query(...), limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.get_orders_by_customer(session, actor, customer, limit)
 
 
 @app.get("/api/orders")
 def list_orders(
-    status: str = Query("all", description="pending|shipped|delivered|cancelled|all"),
+    order_status: str = Query("all", alias="status"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    start_date: str | None = Query(None, description="YYYY-MM-DD"),
-    end_date: str | None = Query(None, description="YYYY-MM-DD"),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
 ):
-    """List orders with optional status and date-range filtering."""
-    db = database.get_db()
-    try:
-        query = """SELECT o.*, c.name AS customer_name, c.email AS customer_email
-                   FROM orders o
-                   JOIN customers c ON o.customer_id = c.id
-                   WHERE 1=1"""
-        params: list[Any] = []
-
-        if status != "all":
-            query += " AND o.status = ?"
-            params.append(status)
-
-        if start_date and end_date:
-            query += " AND o.created_at BETWEEN ? AND ?"
-            params.append(start_date)
-            try:
-                end_dt = datetime.fromisoformat(end_date).replace(hour=23, minute=59, second=59)
-                params.append(end_dt.isoformat())
-            except (ValueError, TypeError):
-                params.append(end_date + "T23:59:59")
-
-        # Count total
-        count_query = query.replace(
-            "SELECT o.*, c.name AS customer_name, c.email AS customer_email",
-            "SELECT COUNT(*) AS cnt",
-        )
-        total = db.execute(count_query, params).fetchone()["cnt"]
-
-        query += " ORDER BY o.created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-
-        rows = db.execute(query, params).fetchall()
-        order_ids = [r["id"] for r in rows]
-        items_map = _fetch_items_for_orders(order_ids)
-        results = [_build_order_dict(r, items_map[r["id"]]) for r in rows]
-
-        return {"data": results, "total": total, "offset": offset, "limit": limit}
-    finally:
-        db.close()
+    return svc.list_orders(session, actor, order_status, limit, offset, start_date, end_date)
 
 
-# ---------------------------------------------------------------------------
-# Endpoints — Logistics (NEW)
-# ---------------------------------------------------------------------------
+@app.get("/api/orders/{order_id}")
+def get_order(order_id: str, actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session), verification_token: str | None = Header(None, alias="X-Identity-Verification")):
+    return svc.get_order(session, actor, order_id, _verification(session, verification_token))
 
 
 @app.get("/api/orders/{order_id}/shipment")
-def get_shipment(order_id: str):
-    """Get logistics/shipment info for an order, including full tracking timeline."""
-    db = database.get_db()
-    try:
-        ship = db.execute(
-            "SELECT * FROM shipments WHERE order_id = ?", (order_id,)
-        ).fetchone()
-
-        if ship is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No shipment found for order '{order_id}'. "
-                        "The order may not have shipped yet.",
-            )
-
-        events = db.execute(
-            "SELECT * FROM shipment_events WHERE shipment_id = ? ORDER BY event_time",
-            (ship["id"],),
-        ).fetchall()
-
-        return {
-            "order_id": ship["order_id"],
-            "carrier": ship["carrier"],
-            "tracking_number": ship["tracking_number"],
-            "status": ship["status"],
-            "estimated_delivery": ship["estimated_delivery"],
-            "updated_at": ship["updated_at"],
-            "events": [
-                {
-                    "status": e["status"],
-                    "location": e["location"],
-                    "description": e["description"],
-                    "event_time": e["event_time"],
-                }
-                for e in events
-            ],
-        }
-    finally:
-        db.close()
+def get_shipment(order_id: str, actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session), verification_token: str | None = Header(None, alias="X-Identity-Verification")):
+    return svc.get_shipment(session, actor, order_id, _verification(session, verification_token))
 
 
 @app.get("/api/shipments/{tracking_number}")
-def track_by_number(tracking_number: str):
-    """Look up a shipment by its tracking number."""
-    db = database.get_db()
-    try:
-        ship = db.execute(
-            "SELECT * FROM shipments WHERE tracking_number = ?", (tracking_number,)
-        ).fetchone()
-
-        if ship is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Tracking number '{tracking_number}' not found.",
-            )
-
-        events = db.execute(
-            "SELECT * FROM shipment_events WHERE shipment_id = ? ORDER BY event_time",
-            (ship["id"],),
-        ).fetchall()
-
-        return {
-            "order_id": ship["order_id"],
-            "carrier": ship["carrier"],
-            "tracking_number": ship["tracking_number"],
-            "status": ship["status"],
-            "estimated_delivery": ship["estimated_delivery"],
-            "updated_at": ship["updated_at"],
-            "events": [
-                {
-                    "status": e["status"],
-                    "location": e["location"],
-                    "description": e["description"],
-                    "event_time": e["event_time"],
-                }
-                for e in events
-            ],
-        }
-    finally:
-        db.close()
-
-
-# ---------------------------------------------------------------------------
-# Endpoints — Customers / Membership (NEW)
-# ---------------------------------------------------------------------------
+def track_by_number(tracking_number: str, actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.track_by_number(session, actor, tracking_number)
 
 
 @app.get("/api/customers/search")
-def search_customers(
-    q: str = Query(..., description="Search by name, email, or phone"),
-    limit: int = Query(20, ge=1, le=100),
-):
-    """Search customers by name, email, or phone number (partial match)."""
-    db = database.get_db()
-    try:
-        like = f"%{q}%"
-        rows = db.execute(
-            """SELECT * FROM customers
-               WHERE name LIKE ? OR email LIKE ? OR phone LIKE ?
-               LIMIT ?""",
-            (like, like, like, limit),
-        ).fetchall()
-
-        return {
-            "data": [
-                {
-                    "id": r["id"],
-                    "name": r["name"],
-                    "email": r["email"],
-                    "phone": r["phone"],
-                    "membership_tier": r["membership_tier"],
-                    "points": r["points"],
-                    "joined_at": r["joined_at"],
-                }
-                for r in rows
-            ],
-            "total": len(rows),
-        }
-    finally:
-        db.close()
+def search_customers(q: str = Query(...), limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.search_customers(session, actor, q, limit)
 
 
 @app.get("/api/customers/{customer_id}")
-def get_customer(customer_id: int):
-    """Get full customer profile including membership tier, points, and order summary."""
-    db = database.get_db()
-    try:
-        cust = db.execute(
-            "SELECT * FROM customers WHERE id = ?", (customer_id,)
-        ).fetchone()
-
-        if cust is None:
-            raise HTTPException(
-                status_code=404, detail=f"Customer '{customer_id}' not found."
-            )
-
-        # Order summary
-        summary = db.execute(
-            """SELECT COUNT(*) AS total_orders,
-                      SUM(CASE WHEN status != 'cancelled' THEN total_amount ELSE 0 END) AS total_spent
-               FROM orders WHERE customer_id = ?""",
-            (customer_id,),
-        ).fetchone()
-
-        this_month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        this_month_orders = db.execute(
-            "SELECT COUNT(*) AS cnt FROM orders WHERE customer_id = ? AND created_at >= ?",
-            (customer_id, this_month_start.isoformat()),
-        ).fetchone()["cnt"]
-
-        return {
-            "id": cust["id"],
-            "name": cust["name"],
-            "email": cust["email"],
-            "phone": cust["phone"],
-            "membership_tier": cust["membership_tier"],
-            "points": cust["points"],
-            "joined_at": cust["joined_at"],
-            "order_summary": {
-                "total_orders": summary["total_orders"],
-                "total_spent": round(summary["total_spent"] or 0, 2),
-                "this_month_orders": this_month_orders,
-            },
-        }
-    finally:
-        db.close()
-
-
-# ---------------------------------------------------------------------------
-# Helpers — Tickets & Returns
-# ---------------------------------------------------------------------------
-
-
-def _next_ticket_number(db: sqlite3.Connection) -> str:
-    """Generate the next ticket number: TK-YYYYMMDD-NNN."""
-    today = datetime.now().strftime("%Y%m%d")
-    prefix = f"TK-{today}-"
-    row = db.execute(
-        "SELECT ticket_number FROM tickets WHERE ticket_number LIKE ? ORDER BY ticket_number DESC LIMIT 1",
-        (f"{prefix}%",),
-    ).fetchone()
-    if row:
-        seq = int(row["ticket_number"].rsplit("-", 1)[-1]) + 1
-    else:
-        seq = 1
-    return f"{prefix}{seq:03d}"
-
-
-def _next_return_number(db: sqlite3.Connection) -> str:
-    """Generate the next return number: RMA-YYYYMMDD-NNN."""
-    today = datetime.now().strftime("%Y%m%d")
-    prefix = f"RMA-{today}-"
-    row = db.execute(
-        "SELECT return_number FROM returns WHERE return_number LIKE ? ORDER BY return_number DESC LIMIT 1",
-        (f"{prefix}%",),
-    ).fetchone()
-    if row:
-        seq = int(row["return_number"].rsplit("-", 1)[-1]) + 1
-    else:
-        seq = 1
-    return f"{prefix}{seq:03d}"
-
-
-# ---------------------------------------------------------------------------
-# Endpoints — Tickets
-# ---------------------------------------------------------------------------
+def get_customer(customer_id: int, actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session), verification_token: str | None = Header(None, alias="X-Identity-Verification")):
+    return svc.get_customer(session, actor, customer_id, _verification(session, verification_token))
 
 
 @app.post("/api/tickets", status_code=201)
 def create_ticket(
-    title: str = Query(..., description="Ticket title"),
-    type: str = Query("incident", description="incident|service_request|change_request|problem"),
-    priority: str = Query("P3", description="P1|P2|P3|P4"),
-    description: str = Query("", description="Detailed description"),
+    title: str = Query(...),
+    type: str = Query("incident"),
+    priority: str = Query("P3"),
+    description: str = Query(""),
     customer_id: int | None = Query(None),
     order_id: str | None = Query(None),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
 ):
-    """Create a new work ticket."""
-    db = database.get_db()
-    try:
-        ticket_number = _next_ticket_number(db)
-        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        db.execute(
-            """INSERT INTO tickets (ticket_number, title, type, priority, status,
-               description, customer_id, order_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'new', ?, ?, ?, ?, ?)""",
-            (ticket_number, title, type, priority, description, customer_id, order_id, now, now),
-        )
-        db.commit()
-        new_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        return {"id": new_id, "ticket_number": ticket_number, "status": "new", "created_at": now}
-    finally:
-        db.close()
-
-
-@app.get("/api/tickets/{ticket_id}")
-def get_ticket(ticket_id: int):
-    """Get a ticket by ID, including its notes."""
-    db = database.get_db()
-    try:
-        ticket = db.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-        if ticket is None:
-            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
-
-        notes = db.execute(
-            "SELECT * FROM ticket_notes WHERE ticket_id = ? ORDER BY created_at",
-            (ticket_id,),
-        ).fetchall()
-
-        return {
-            "id": ticket["id"],
-            "ticket_number": ticket["ticket_number"],
-            "title": ticket["title"],
-            "type": ticket["type"],
-            "priority": ticket["priority"],
-            "status": ticket["status"],
-            "description": ticket["description"],
-            "customer_id": ticket["customer_id"],
-            "order_id": ticket["order_id"],
-            "assignee": ticket["assignee"],
-            "department": ticket["department"],
-            "created_at": ticket["created_at"],
-            "updated_at": ticket["updated_at"],
-            "notes": [
-                {
-                    "id": n["id"],
-                    "content": n["content"],
-                    "author": n["author"],
-                    "created_at": n["created_at"],
-                }
-                for n in notes
-            ],
-        }
-    finally:
-        db.close()
+    key = require_idempotency_key(idempotency_key)
+    verification = _verification(session, verification_token)
+    payload = {"title": title, "type": type, "priority": priority, "description": description, "customer_id": customer_id, "order_id": order_id}
+    response, code, _replayed = run_idempotent(
+        session,
+        actor,
+        "POST /api/tickets",
+        key,
+        payload,
+        lambda: (
+            svc.create_ticket(session, actor, title, description, type, priority, customer_id, order_id, verification, key, request_id),
+            201,
+        ),
+    )
+    return JSONResponse(status_code=code, content=response)
 
 
 @app.get("/api/tickets")
-def list_tickets(
-    status: str | None = Query(None, description="Filter by status"),
-    assignee: str | None = Query(None, description="Filter by assignee"),
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-):
-    """List tickets with optional filtering."""
-    db = database.get_db()
-    try:
-        query = "SELECT * FROM tickets WHERE 1=1"
-        params: list[Any] = []
+def list_tickets(status_filter: str | None = Query(None, alias="status"), assignee: str | None = Query(None), limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.list_tickets(session, actor, status_filter, assignee, limit, offset)
 
-        if status:
-            query += " AND status = ?"
-            params.append(status)
-        if assignee:
-            query += " AND assignee = ?"
-            params.append(assignee)
 
-        count_query = query.replace("SELECT *", "SELECT COUNT(*) AS cnt")
-        total = db.execute(count_query, params).fetchone()["cnt"]
-
-        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-
-        rows = db.execute(query, params).fetchall()
-        results = [
-            {
-                "id": r["id"],
-                "ticket_number": r["ticket_number"],
-                "title": r["title"],
-                "type": r["type"],
-                "priority": r["priority"],
-                "status": r["status"],
-                "description": r["description"],
-                "customer_id": r["customer_id"],
-                "order_id": r["order_id"],
-                "assignee": r["assignee"],
-                "department": r["department"],
-                "created_at": r["created_at"],
-                "updated_at": r["updated_at"],
-            }
-            for r in rows
-        ]
-        return {"data": results, "total": total, "offset": offset, "limit": limit}
-    finally:
-        db.close()
+@app.get("/api/tickets/{ticket_id}")
+def get_ticket(ticket_id: int, actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.get_ticket(session, actor, ticket_id)
 
 
 @app.patch("/api/tickets/{ticket_id}")
 def update_ticket(
     ticket_id: int,
-    status: str | None = Query(None, description="new|assigned|in_progress|pending|resolved|closed"),
+    status_value: str | None = Query(None, alias="status"),
     assignee: str | None = Query(None),
-    priority: str | None = Query(None, description="P1|P2|P3|P4"),
-    note: str | None = Query(None, description="Add a note with this update"),
+    priority: str | None = Query(None),
+    note: str | None = Query(None),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
 ):
-    """Update a ticket's status, assignee, or priority. Optionally adds a note."""
-    db = database.get_db()
-    try:
-        ticket = db.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-        if ticket is None:
-            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
-
-        updates: list[str] = []
-        params: list[Any] = []
-        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-
-        if status:
-            updates.append("status = ?")
-            params.append(status)
-        if assignee is not None:
-            updates.append("assignee = ?")
-            params.append(assignee)
-        if priority:
-            updates.append("priority = ?")
-            params.append(priority)
-
-        if updates:
-            updates.append("updated_at = ?")
-            params.append(now)
-            params.append(ticket_id)
-            db.execute(f"UPDATE tickets SET {', '.join(updates)} WHERE id = ?", params)
-
-        if note:
-            db.execute(
-                "INSERT INTO ticket_notes (ticket_id, content, author, created_at) VALUES (?, ?, 'system', ?)",
-                (ticket_id, note, now),
-            )
-
-        db.commit()
-        return {"id": ticket_id, "updated_at": now, "status": "updated"}
-    finally:
-        db.close()
+    key = require_idempotency_key(idempotency_key)
+    verification = _verification(session, verification_token)
+    payload = {"status": status_value, "assignee": assignee, "priority": priority, "note": note}
+    response, code, _replayed = run_idempotent(
+        session,
+        actor,
+        f"PATCH /api/tickets/{ticket_id}",
+        key,
+        payload,
+        lambda: (svc.update_ticket(session, actor, ticket_id, status_value, assignee, priority, note, verification, request_id), 200),
+    )
+    return JSONResponse(status_code=code, content=response)
 
 
 @app.post("/api/tickets/{ticket_id}/notes")
 def add_ticket_note(
     ticket_id: int,
-    content: str = Query(..., description="Note content"),
-    author: str = Query("system", description="Note author"),
+    content: str = Query(...),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
 ):
-    """Add a note to a ticket."""
-    db = database.get_db()
-    try:
-        ticket = db.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-        if ticket is None:
-            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
-
-        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        db.execute(
-            "INSERT INTO ticket_notes (ticket_id, content, author, created_at) VALUES (?, ?, ?, ?)",
-            (ticket_id, content, author, now),
-        )
-        db.commit()
-        return {"ticket_id": ticket_id, "content": content, "author": author, "created_at": now}
-    finally:
-        db.close()
+    key = require_idempotency_key(idempotency_key)
+    verification = _verification(session, verification_token)
+    response, code, _replayed = run_idempotent(
+        session,
+        actor,
+        f"POST /api/tickets/{ticket_id}/notes",
+        key,
+        {"content": content},
+        lambda: (svc.update_ticket(session, actor, ticket_id, None, None, None, content, verification, request_id), 200),
+    )
+    return JSONResponse(status_code=code, content=response)
 
 
 @app.get("/api/tickets/search")
-def search_tickets(
-    q: str = Query(..., description="Search keyword"),
-    limit: int = Query(20, ge=1, le=100),
-):
-    """Search tickets by keyword across title, description, and ticket number."""
-    db = database.get_db()
-    try:
-        like = f"%{q}%"
-        rows = db.execute(
-            """SELECT * FROM tickets
-               WHERE ticket_number LIKE ? OR title LIKE ? OR description LIKE ?
-               ORDER BY created_at DESC LIMIT ?""",
-            (like, like, like, limit),
-        ).fetchall()
-
-        results = [
-            {
-                "id": r["id"],
-                "ticket_number": r["ticket_number"],
-                "title": r["title"],
-                "type": r["type"],
-                "priority": r["priority"],
-                "status": r["status"],
-                "description": r["description"],
-                "customer_id": r["customer_id"],
-                "order_id": r["order_id"],
-                "assignee": r["assignee"],
-                "department": r["department"],
-                "created_at": r["created_at"],
-                "updated_at": r["updated_at"],
-            }
-            for r in rows
-        ]
-        return {"data": results, "total": len(results)}
-    finally:
-        db.close()
-
-
-# ---------------------------------------------------------------------------
-# Endpoints — Returns / After-Sales
-# ---------------------------------------------------------------------------
+def search_tickets(query: str = Query(..., alias="q"), limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    data = svc.list_tickets(session, actor, None, None, limit=100, offset=0)["data"]
+    matches = [ticket for ticket in data if query in ticket["title"] or query in ticket["description"] or query in ticket["ticket_number"]]
+    return {"data": matches[:limit], "total": len(matches[:limit])}
 
 
 @app.post("/api/returns", status_code=201)
 def create_return(
-    order_id: str = Query(..., description="Order ID to return"),
-    type: str = Query("return", description="return|exchange|refund"),
-    reason: str = Query(..., description="Return reason"),
-    description: str = Query("", description="Detailed description"),
+    order_id: str = Query(...),
+    type: str = Query("return"),
+    reason: str = Query(...),
+    description: str = Query(""),
     customer_id: int | None = Query(None),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
 ):
-    """Create a return/exchange/refund request."""
-    db = database.get_db()
-    try:
-        # Verify order exists
-        order = db.execute("SELECT id FROM orders WHERE id = ?", (order_id,)).fetchone()
-        if order is None:
-            raise HTTPException(status_code=404, detail=f"Order '{order_id}' not found")
-
-        return_number = _next_return_number(db)
-        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        db.execute(
-            """INSERT INTO returns (return_number, order_id, customer_id, type, reason,
-               description, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-            (return_number, order_id, customer_id, type, reason, description, now, now),
-        )
-        db.commit()
-        new_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        return {"id": new_id, "return_number": return_number, "status": "pending", "created_at": now}
-    finally:
-        db.close()
-
-
-@app.get("/api/returns/{return_id}")
-def get_return(return_id: int):
-    """Get a return request by ID."""
-    db = database.get_db()
-    try:
-        ret = db.execute("SELECT * FROM returns WHERE id = ?", (return_id,)).fetchone()
-        if ret is None:
-            raise HTTPException(status_code=404, detail=f"Return {return_id} not found")
-        return {
-            "id": ret["id"],
-            "return_number": ret["return_number"],
-            "order_id": ret["order_id"],
-            "customer_id": ret["customer_id"],
-            "type": ret["type"],
-            "reason": ret["reason"],
-            "description": ret["description"],
-            "status": ret["status"],
-            "refund_amount": ret["refund_amount"],
-            "created_at": ret["created_at"],
-            "updated_at": ret["updated_at"],
-        }
-    finally:
-        db.close()
+    key = require_idempotency_key(idempotency_key)
+    verification = _verification(session, verification_token)
+    payload = {"order_id": order_id, "type": type, "reason": reason, "description": description, "customer_id": customer_id}
+    response, code, _replayed = run_idempotent(
+        session,
+        actor,
+        "POST /api/returns",
+        key,
+        payload,
+        lambda: (svc.create_return(session, actor, order_id, type, reason, description, customer_id, verification, key, request_id), 201),
+    )
+    return JSONResponse(status_code=code, content=response)
 
 
 @app.get("/api/returns")
-def list_returns(
-    status: str | None = Query(None, description="Filter by status"),
-    customer_id: int | None = Query(None, description="Filter by customer"),
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-):
-    """List returns with optional filtering."""
-    db = database.get_db()
-    try:
-        query = "SELECT * FROM returns WHERE 1=1"
-        params: list[Any] = []
+def list_returns(status_filter: str | None = Query(None, alias="status"), customer_id: int | None = Query(None), limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.list_returns(session, actor, status_filter, customer_id, limit, offset)
 
-        if status:
-            query += " AND status = ?"
-            params.append(status)
-        if customer_id:
-            query += " AND customer_id = ?"
-            params.append(customer_id)
 
-        count_query = query.replace("SELECT *", "SELECT COUNT(*) AS cnt")
-        total = db.execute(count_query, params).fetchone()["cnt"]
-
-        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-
-        rows = db.execute(query, params).fetchall()
-        results = [
-            {
-                "id": r["id"],
-                "return_number": r["return_number"],
-                "order_id": r["order_id"],
-                "customer_id": r["customer_id"],
-                "type": r["type"],
-                "reason": r["reason"],
-                "description": r["description"],
-                "status": r["status"],
-                "refund_amount": r["refund_amount"],
-                "created_at": r["created_at"],
-                "updated_at": r["updated_at"],
-            }
-            for r in rows
-        ]
-        return {"data": results, "total": total, "offset": offset, "limit": limit}
-    finally:
-        db.close()
+@app.get("/api/returns/{return_id}")
+def get_return(return_id: int, actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.get_return(session, actor, return_id)
 
 
 @app.patch("/api/returns/{return_id}")
 def update_return_status(
     return_id: int,
-    status: str = Query(..., description="pending|approved|rejected|in_transit|received|refunded|completed"),
-    note: str | None = Query(None, description="Optional note for status change"),
+    status_value: str = Query(..., alias="status"),
+    note: str | None = Query(None),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
 ):
-    """Update a return request status."""
-    db = database.get_db()
-    try:
-        ret = db.execute("SELECT * FROM returns WHERE id = ?", (return_id,)).fetchone()
-        if ret is None:
-            raise HTTPException(status_code=404, detail=f"Return {return_id} not found")
-
-        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        db.execute(
-            "UPDATE returns SET status = ?, updated_at = ? WHERE id = ?",
-            (status, now, return_id),
-        )
-        db.commit()
-        return {"id": return_id, "status": status, "updated_at": now, "note": note}
-    finally:
-        db.close()
+    key = require_idempotency_key(idempotency_key)
+    verification = _verification(session, verification_token)
+    response, code, _replayed = run_idempotent(
+        session,
+        actor,
+        f"PATCH /api/returns/{return_id}",
+        key,
+        {"status": status_value, "note": note},
+        lambda: (svc.update_return_status(session, actor, return_id, status_value, note, verification, request_id), 200),
+    )
+    return JSONResponse(status_code=code, content=response)
 
 
 @app.get("/api/orders/{order_id}/returns")
-def get_order_returns(order_id: str):
-    """Get all return requests for a specific order."""
-    db = database.get_db()
-    try:
-        # Verify order exists
-        order = db.execute("SELECT id FROM orders WHERE id = ?", (order_id,)).fetchone()
-        if order is None:
-            raise HTTPException(status_code=404, detail=f"Order '{order_id}' not found")
-
-        rows = db.execute(
-            "SELECT * FROM returns WHERE order_id = ? ORDER BY created_at DESC",
-            (order_id,),
-        ).fetchall()
-
-        results = [
-            {
-                "id": r["id"],
-                "return_number": r["return_number"],
-                "order_id": r["order_id"],
-                "customer_id": r["customer_id"],
-                "type": r["type"],
-                "reason": r["reason"],
-                "description": r["description"],
-                "status": r["status"],
-                "refund_amount": r["refund_amount"],
-                "created_at": r["created_at"],
-                "updated_at": r["updated_at"],
-            }
-            for r in rows
-        ]
-        return {"data": results, "total": len(results), "order_id": order_id}
-    finally:
-        db.close()
-
-
-# ---------------------------------------------------------------------------
-# Helpers -- Survey number generation
-# ---------------------------------------------------------------------------
-
-
-def _next_survey_number(db: sqlite3.Connection) -> str:
-    """Generate the next survey number: SAT-YYYYMMDD-NNN."""
-    today = datetime.now().strftime("%Y%m%d")
-    prefix = f"SAT-{today}-"
-    row = db.execute(
-        "SELECT survey_number FROM satisfaction_surveys WHERE survey_number LIKE ? ORDER BY survey_number DESC LIMIT 1",
-        (f"{prefix}%",),
-    ).fetchone()
-    if row:
-        seq = int(row["survey_number"].rsplit("-", 1)[-1]) + 1
-    else:
-        seq = 1
-    return f"{prefix}{seq:03d}"
-
-
-# ---------------------------------------------------------------------------
-# Endpoints -- Satisfaction Surveys
-# ---------------------------------------------------------------------------
+def get_order_returns(order_id: str, actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    require_permission(actor, "return:read")
+    rows = svc.list_returns(session, actor, None, None, 100, 0)["data"]
+    data = [row for row in rows if row["order_id"] == order_id]
+    return {"data": data, "total": len(data), "order_id": order_id}
 
 
 @app.post("/api/surveys", status_code=201)
 def submit_survey(
+    rating: int = Query(..., ge=1, le=5),
+    feedback: str = Query(""),
     customer_id: int | None = Query(None),
-    rating: int = Query(..., ge=1, le=5, description="Rating 1-5"),
-    feedback: str = Query("", description="Optional feedback text"),
     order_id: str | None = Query(None),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
 ):
-    """Submit a customer satisfaction survey rating."""
-    db = database.get_db()
-    try:
-        survey_number = _next_survey_number(db)
-        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        db.execute(
-            """INSERT INTO satisfaction_surveys (survey_number, customer_id, order_id, rating, feedback_text, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (survey_number, customer_id, order_id, rating, feedback, now),
-        )
-        db.commit()
-        new_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        return {"id": new_id, "survey_number": survey_number, "rating": rating, "created_at": now}
-    finally:
-        db.close()
+    key = require_idempotency_key(idempotency_key)
+    verification = _verification(session, verification_token)
+    payload = {"rating": rating, "feedback": feedback, "customer_id": customer_id, "order_id": order_id}
+    response, code, _replayed = run_idempotent(
+        session,
+        actor,
+        "POST /api/surveys",
+        key,
+        payload,
+        lambda: (svc.submit_survey(session, actor, rating, feedback, customer_id, order_id, verification, key, request_id), 201),
+    )
+    return JSONResponse(status_code=code, content=response)
 
 
 @app.get("/api/surveys")
-def list_surveys(
-    customer_id: int | None = Query(None),
-    rating: int | None = Query(None),
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-):
-    """List satisfaction surveys with optional filtering."""
-    db = database.get_db()
-    try:
-        query = "SELECT * FROM satisfaction_surveys WHERE 1=1"
-        params: list[Any] = []
-
-        if customer_id:
-            query += " AND customer_id = ?"
-            params.append(customer_id)
-        if rating:
-            query += " AND rating = ?"
-            params.append(rating)
-
-        count_query = query.replace("SELECT *", "SELECT COUNT(*) AS cnt")
-        total = db.execute(count_query, params).fetchone()["cnt"]
-
-        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-
-        rows = db.execute(query, params).fetchall()
-        results = [
-            {
-                "id": r["id"],
-                "survey_number": r["survey_number"],
-                "customer_id": r["customer_id"],
-                "order_id": r["order_id"],
-                "rating": r["rating"],
-                "feedback_text": r["feedback_text"],
-                "created_at": r["created_at"],
-            }
-            for r in rows
-        ]
-        return {"data": results, "total": total, "offset": offset, "limit": limit}
-    finally:
-        db.close()
+def list_surveys(customer_id: int | None = Query(None), rating: int | None = Query(None), limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    return svc.list_surveys(session, actor, customer_id, rating, limit, offset)
