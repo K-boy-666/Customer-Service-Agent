@@ -1,0 +1,1 @@
+- [查订单直连 order-inquiry-agent](routing-order-inquiry-direct.md) — L0只读查询跳过Orchestrator直达子agent，避免30+次工具往返

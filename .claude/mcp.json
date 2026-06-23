@@ -1,8 +1,13 @@
 {
   "mcpServers": {
     "customer-service": {
-      "command": "node",
-      "args": ["mcp-server/dist/index.js"],
+      "command": "python",
+      "args": ["server_customer.py"],
+      "cwd": "${projectDir}"
+    },
+    "order-server": {
+      "command": "python",
+      "args": ["server.py"],
       "cwd": "${projectDir}"
     }
   }

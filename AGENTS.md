@@ -30,4 +30,4 @@ Before using this project, ensure the REST API server is running:
 uvicorn order_api:app --reload --port 8000
 ```
 
-MCP servers are launched automatically by Claude Code via `.claude/mcp.json`.
+MCP servers are launched automatically by Codex via `.Codex/mcp.json`.

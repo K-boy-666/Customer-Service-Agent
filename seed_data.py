@@ -268,10 +268,83 @@ def _build_shipment_events(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Ticket seed data
+# ---------------------------------------------------------------------------
+
+TICKET_SEEDS = [
+    # (title, type, priority, status, description, customer_id, order_id, assignee, department)
+    (
+        "订单未收到但显示已签收",
+        "incident", "P2", "new",
+        "客户反馈订单SO20260601001显示已签收，但实际未收到包裹，快递员电话无人接听。",
+        1, None, "", "应用支持部",
+    ),
+    (
+        "无线鼠标按键失灵",
+        "incident", "P3", "assigned",
+        "客户购买的无线鼠标左键双击无响应，已排除电池问题，疑似微动开关故障。客户要求在保修期内维修。",
+        3, None, "王工", "应用支持部",
+    ),
+    (
+        "企业采购发票开具申请",
+        "service_request", "P3", "in_progress",
+        "企业客户需要开具增值税专用发票，金额合计15,900元，已提供纳税人识别号。",
+        2, None, "赵客服", "IT服务台",
+    ),
+    (
+        "系统支付页面加载失败",
+        "problem", "P1", "assigned",
+        "今日上午10:00起，多名客户反馈支付宝支付页面加载超时，影响范围正在统计中。需紧急排查。",
+        None, None, "张工", "应用支持部",
+    ),
+    (
+        "退款未到账 — 已超5个工作日",
+        "incident", "P2", "pending",
+        "客户7天前申请的退款至今未到账，银行反馈未收到退款指令。需财务核查退款流水。",
+        6, None, "", "IT服务台",
+    ),
+]
+
+# ---------------------------------------------------------------------------
+# Return seed data
+# ---------------------------------------------------------------------------
+
+RETURN_SEEDS = [
+    # (order_id, customer_id, type, reason, description, status, refund_amount)
+    # We'll fill order_id and customer_id dynamically after orders are inserted
+    # These indices reference ORDER_SPECS by position
+]
+
+# Maps to specific orders for realistic return scenarios
+RETURN_SPECS = [
+    # (order_spec_idx, type, reason, description, status)
+    # order_spec_idx 0: 张三, delivered, LAPTOP-BAG-01 *2 + MOUSE-WL-02 *4
+    (0, "refund", "商品质量问题", "无线鼠标收到后发现右键不灵敏，要求退款。已拍照取证。", "pending"),
+    # order_spec_idx 6: 孙七, delivered, MBP-16-M3
+    (6, "exchange", "商品与描述不符", "收到的MacBook Pro颜色与下单时不符，需要换货。", "approved"),
+    # order_spec_idx 5: 张三, cancelled, WEBCAM-1080P
+    (5, "return", "不想要了", "购买后改变主意，未拆封。申请7天无理由退货。", "in_transit"),
+]
+
+SURVEY_SEEDS = [
+    # (customer_id, order_id, rating, feedback_text)
+    (1, None, 5, "客服小客非常耐心，问题很快就解决了，五星好评！"),
+    (3, None, 2, "退款处理太慢了，等了5天才到账，希望能改进。"),
+    (2, None, 4, "整体服务不错，就是等待时间有点长。"),
+    (6, None, 1, "完全没有解决我的问题，转了三个人都没有结果。"),
+    (4, None, 5, "物流查询很快，客服态度很好。"),
+]
+
+
 def seed(conn: sqlite3.Connection) -> None:
     """Clear all tables and insert seed data. Wrapped in a single transaction."""
 
     # Clear in reverse dependency order
+    conn.execute("DELETE FROM ticket_notes")
+    conn.execute("DELETE FROM tickets")
+    conn.execute("DELETE FROM returns")
+    conn.execute("DELETE FROM satisfaction_surveys")
     conn.execute("DELETE FROM shipment_events")
     conn.execute("DELETE FROM shipments")
     conn.execute("DELETE FROM order_items")
@@ -377,6 +450,52 @@ def seed(conn: sqlite3.Connection) -> None:
                  evt["description"], evt["event_time"]),
             )
 
+    # --- Tickets ---
+    today_str = TODAY.strftime("%Y%m%d")
+    for i, t in enumerate(TICKET_SEEDS):
+        ticket_number = f"TK-{today_str}-{i + 1:03d}"
+        conn.execute(
+            """INSERT INTO tickets (ticket_number, title, type, priority, status,
+               description, customer_id, order_id, assignee, department, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))""",
+            (ticket_number, *t),
+        )
+
+        ticket_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # Add an initial note for each ticket
+        conn.execute(
+            """INSERT INTO ticket_notes (ticket_id, content, author, created_at)
+               VALUES (?, '工单已创建，等待处理。', 'system', datetime('now','localtime'))""",
+            (ticket_id,),
+        )
+
+    # --- Returns ---
+    for order_spec_idx, ret_type, reason, description, status in RETURN_SPECS:
+        cust_idx, day_off, order_status, _items = ORDER_SPECS[order_spec_idx]
+        cust_id = CUSTOMERS[cust_idx][0]
+
+        # Recalculate order_id
+        _seq = sum(1 for j in range(order_spec_idx + 1) if ORDER_SPECS[j][1] == day_off)
+        order_id = _order_id(day_off, _seq)
+
+        return_number = f"RMA-{TODAY.strftime('%Y%m%d')}-{order_spec_idx + 1:03d}"
+        conn.execute(
+            """INSERT INTO returns (return_number, order_id, customer_id, type, reason,
+               description, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))""",
+            (return_number, order_id, cust_id, ret_type, reason, description, status),
+        )
+
+    # --- Satisfaction Surveys ---
+    today_str = TODAY.strftime("%Y%m%d")
+    for i, (cust_id, order_id, rating, feedback) in enumerate(SURVEY_SEEDS):
+        survey_number = f"SAT-{today_str}-{i + 1:03d}"
+        conn.execute(
+            """INSERT INTO satisfaction_surveys (survey_number, customer_id, order_id, rating, feedback_text, created_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))""",
+            (survey_number, cust_id, order_id, rating, feedback),
+        )
+
     conn.commit()
 
 
@@ -388,7 +507,8 @@ def main() -> None:
         seed(conn)
         # Verify
         counts = {}
-        for table in ["customers","products","orders","order_items","shipments","shipment_events"]:
+        for table in ["customers","products","orders","order_items","shipments",
+                       "shipment_events","tickets","ticket_notes","returns","satisfaction_surveys"]:
             row = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
             counts[table] = row["n"]
         print("Seed complete:")

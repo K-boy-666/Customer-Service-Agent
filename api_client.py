@@ -126,3 +126,212 @@ async def search_customers(query: str, limit: int = 20) -> list[dict[str, Any]]:
     """Search for customers by name, email, or phone number."""
     data = await _get("/api/customers/search", {"q": query, "limit": limit})
     return data if isinstance(data, list) else data.get("data", [])
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers — POST / PATCH
+# ---------------------------------------------------------------------------
+
+
+async def _post(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send a POST request to the order API. Returns the parsed JSON body."""
+    url = f"{BASE_URL.rstrip('/')}{path}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, headers=_headers(), params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _patch(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send a PATCH request to the order API. Returns the parsed JSON body."""
+    url = f"{BASE_URL.rstrip('/')}{path}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.patch(url, headers=_headers(), params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Ticket functions
+# ---------------------------------------------------------------------------
+
+
+async def create_ticket(
+    title: str,
+    type: str = "incident",
+    priority: str = "P3",
+    description: str = "",
+    customer_id: int | None = None,
+    order_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a new work ticket."""
+    params: dict[str, Any] = {
+        "title": title,
+        "type": type,
+        "priority": priority,
+        "description": description,
+    }
+    if customer_id:
+        params["customer_id"] = customer_id
+    if order_id:
+        params["order_id"] = order_id
+    return await _post("/api/tickets", params)
+
+
+async def get_ticket(ticket_id: int) -> dict[str, Any] | None:
+    """Get a ticket by ID with its notes. Returns None if not found."""
+    try:
+        return await _get(f"/api/tickets/{ticket_id}")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None
+        raise
+
+
+async def list_tickets(
+    status: str | None = None,
+    assignee: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List tickets with optional filtering."""
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if status:
+        params["status"] = status
+    if assignee:
+        params["assignee"] = assignee
+    return await _get("/api/tickets", params)
+
+
+async def update_ticket(
+    ticket_id: int,
+    status: str | None = None,
+    assignee: str | None = None,
+    priority: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a ticket. Returns None if not found."""
+    params: dict[str, Any] = {}
+    if status:
+        params["status"] = status
+    if assignee is not None:
+        params["assignee"] = assignee
+    if priority:
+        params["priority"] = priority
+    if note:
+        params["note"] = note
+    try:
+        return await _patch(f"/api/tickets/{ticket_id}", params)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None
+        raise
+
+
+async def add_ticket_note(
+    ticket_id: int, content: str, author: str = "system"
+) -> dict[str, Any]:
+    """Add a note to a ticket."""
+    return await _post(
+        f"/api/tickets/{ticket_id}/notes",
+        {"content": content, "author": author},
+    )
+
+
+async def search_tickets(query: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Search tickets by keyword across title, description, and ticket number."""
+    data = await _get("/api/tickets/search", {"q": query, "limit": limit})
+    return data if isinstance(data, list) else data.get("data", [])
+
+
+# ---------------------------------------------------------------------------
+# Return / After-Sales functions
+# ---------------------------------------------------------------------------
+
+
+async def create_return(
+    order_id: str,
+    reason: str,
+    type: str = "return",
+    description: str = "",
+    customer_id: int | None = None,
+) -> dict[str, Any]:
+    """Create a return/exchange/refund request."""
+    params: dict[str, Any] = {
+        "order_id": order_id,
+        "type": type,
+        "reason": reason,
+        "description": description,
+    }
+    if customer_id:
+        params["customer_id"] = customer_id
+    return await _post("/api/returns", params)
+
+
+async def get_return(return_id: int) -> dict[str, Any] | None:
+    """Get a return request by ID. Returns None if not found."""
+    try:
+        return await _get(f"/api/returns/{return_id}")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None
+        raise
+
+
+async def list_returns(
+    status: str | None = None,
+    customer_id: int | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List returns with optional filtering."""
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if status:
+        params["status"] = status
+    if customer_id:
+        params["customer_id"] = customer_id
+    return await _get("/api/returns", params)
+
+
+async def update_return_status(
+    return_id: int, status: str, note: str | None = None
+) -> dict[str, Any] | None:
+    """Update a return request status. Returns None if not found."""
+    params: dict[str, Any] = {"status": status}
+    if note:
+        params["note"] = note
+    try:
+        return await _patch(f"/api/returns/{return_id}", params)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None
+        raise
+
+
+async def get_order_returns(order_id: str) -> list[dict[str, Any]]:
+    """Get all return requests for a specific order."""
+    data = await _get(f"/api/orders/{order_id}/returns")
+    return data if isinstance(data, list) else data.get("data", [])
+
+
+# ---------------------------------------------------------------------------
+# Satisfaction Survey functions
+# ---------------------------------------------------------------------------
+
+
+async def submit_satisfaction(
+    rating: int,
+    feedback: str = "",
+    customer_id: int | None = None,
+    order_id: str | None = None,
+) -> dict[str, Any]:
+    """Submit a customer satisfaction survey rating (1-5)."""
+    params: dict[str, Any] = {
+        "rating": rating,
+        "feedback": feedback,
+    }
+    if customer_id:
+        params["customer_id"] = customer_id
+    if order_id:
+        params["order_id"] = order_id
+    return await _post("/api/surveys", params)

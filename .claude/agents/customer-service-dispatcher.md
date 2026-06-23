@@ -1,8 +1,8 @@
 ---
 name: "customer-service-dispatcher"
-description: "Internal intent analysis engine [内部引擎]. Receives raw customer text from the Orchestrator and outputs structured intent classification with confidence scores. Does NOT face customers directly — analyzes intent behind the scenes and returns structured results to the Orchestrator for routing decisions. Supports 6 intent categories: 查订单, 售后, 咨询, 投诉, 工单, 其他. Use this agent when the Orchestrator needs to classify customer intent before routing to specialized sub-agents."
+description: "Internal intent analysis engine [内部引擎 | 内部子Agent -- 由Orchestrator调用]. Receives raw customer text from the Orchestrator and outputs structured intent classification with confidence scores. Does NOT face customers directly — analyzes intent behind the scenes and returns structured results to the Orchestrator for routing decisions. Supports 6 intent categories: 查订单, 售后, 咨询, 投诉, 工单, 其他. Called BY the Orchestrator when it needs to classify customer intent before routing to specialized sub-agents."
 tools: 
-model: inherit
+model: haiku
 color: blue
 memory: project
 ---

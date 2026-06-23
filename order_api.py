@@ -445,3 +445,534 @@ def get_customer(customer_id: int):
         }
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Helpers — Tickets & Returns
+# ---------------------------------------------------------------------------
+
+
+def _next_ticket_number(db: sqlite3.Connection) -> str:
+    """Generate the next ticket number: TK-YYYYMMDD-NNN."""
+    today = datetime.now().strftime("%Y%m%d")
+    prefix = f"TK-{today}-"
+    row = db.execute(
+        "SELECT ticket_number FROM tickets WHERE ticket_number LIKE ? ORDER BY ticket_number DESC LIMIT 1",
+        (f"{prefix}%",),
+    ).fetchone()
+    if row:
+        seq = int(row["ticket_number"].rsplit("-", 1)[-1]) + 1
+    else:
+        seq = 1
+    return f"{prefix}{seq:03d}"
+
+
+def _next_return_number(db: sqlite3.Connection) -> str:
+    """Generate the next return number: RMA-YYYYMMDD-NNN."""
+    today = datetime.now().strftime("%Y%m%d")
+    prefix = f"RMA-{today}-"
+    row = db.execute(
+        "SELECT return_number FROM returns WHERE return_number LIKE ? ORDER BY return_number DESC LIMIT 1",
+        (f"{prefix}%",),
+    ).fetchone()
+    if row:
+        seq = int(row["return_number"].rsplit("-", 1)[-1]) + 1
+    else:
+        seq = 1
+    return f"{prefix}{seq:03d}"
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — Tickets
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/tickets", status_code=201)
+def create_ticket(
+    title: str = Query(..., description="Ticket title"),
+    type: str = Query("incident", description="incident|service_request|change_request|problem"),
+    priority: str = Query("P3", description="P1|P2|P3|P4"),
+    description: str = Query("", description="Detailed description"),
+    customer_id: int | None = Query(None),
+    order_id: str | None = Query(None),
+):
+    """Create a new work ticket."""
+    db = database.get_db()
+    try:
+        ticket_number = _next_ticket_number(db)
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        db.execute(
+            """INSERT INTO tickets (ticket_number, title, type, priority, status,
+               description, customer_id, order_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'new', ?, ?, ?, ?, ?)""",
+            (ticket_number, title, type, priority, description, customer_id, order_id, now, now),
+        )
+        db.commit()
+        new_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return {"id": new_id, "ticket_number": ticket_number, "status": "new", "created_at": now}
+    finally:
+        db.close()
+
+
+@app.get("/api/tickets/{ticket_id}")
+def get_ticket(ticket_id: int):
+    """Get a ticket by ID, including its notes."""
+    db = database.get_db()
+    try:
+        ticket = db.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if ticket is None:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+
+        notes = db.execute(
+            "SELECT * FROM ticket_notes WHERE ticket_id = ? ORDER BY created_at",
+            (ticket_id,),
+        ).fetchall()
+
+        return {
+            "id": ticket["id"],
+            "ticket_number": ticket["ticket_number"],
+            "title": ticket["title"],
+            "type": ticket["type"],
+            "priority": ticket["priority"],
+            "status": ticket["status"],
+            "description": ticket["description"],
+            "customer_id": ticket["customer_id"],
+            "order_id": ticket["order_id"],
+            "assignee": ticket["assignee"],
+            "department": ticket["department"],
+            "created_at": ticket["created_at"],
+            "updated_at": ticket["updated_at"],
+            "notes": [
+                {
+                    "id": n["id"],
+                    "content": n["content"],
+                    "author": n["author"],
+                    "created_at": n["created_at"],
+                }
+                for n in notes
+            ],
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/tickets")
+def list_tickets(
+    status: str | None = Query(None, description="Filter by status"),
+    assignee: str | None = Query(None, description="Filter by assignee"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List tickets with optional filtering."""
+    db = database.get_db()
+    try:
+        query = "SELECT * FROM tickets WHERE 1=1"
+        params: list[Any] = []
+
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if assignee:
+            query += " AND assignee = ?"
+            params.append(assignee)
+
+        count_query = query.replace("SELECT *", "SELECT COUNT(*) AS cnt")
+        total = db.execute(count_query, params).fetchone()["cnt"]
+
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = db.execute(query, params).fetchall()
+        results = [
+            {
+                "id": r["id"],
+                "ticket_number": r["ticket_number"],
+                "title": r["title"],
+                "type": r["type"],
+                "priority": r["priority"],
+                "status": r["status"],
+                "description": r["description"],
+                "customer_id": r["customer_id"],
+                "order_id": r["order_id"],
+                "assignee": r["assignee"],
+                "department": r["department"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+        return {"data": results, "total": total, "offset": offset, "limit": limit}
+    finally:
+        db.close()
+
+
+@app.patch("/api/tickets/{ticket_id}")
+def update_ticket(
+    ticket_id: int,
+    status: str | None = Query(None, description="new|assigned|in_progress|pending|resolved|closed"),
+    assignee: str | None = Query(None),
+    priority: str | None = Query(None, description="P1|P2|P3|P4"),
+    note: str | None = Query(None, description="Add a note with this update"),
+):
+    """Update a ticket's status, assignee, or priority. Optionally adds a note."""
+    db = database.get_db()
+    try:
+        ticket = db.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if ticket is None:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+
+        updates: list[str] = []
+        params: list[Any] = []
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        if status:
+            updates.append("status = ?")
+            params.append(status)
+        if assignee is not None:
+            updates.append("assignee = ?")
+            params.append(assignee)
+        if priority:
+            updates.append("priority = ?")
+            params.append(priority)
+
+        if updates:
+            updates.append("updated_at = ?")
+            params.append(now)
+            params.append(ticket_id)
+            db.execute(f"UPDATE tickets SET {', '.join(updates)} WHERE id = ?", params)
+
+        if note:
+            db.execute(
+                "INSERT INTO ticket_notes (ticket_id, content, author, created_at) VALUES (?, ?, 'system', ?)",
+                (ticket_id, note, now),
+            )
+
+        db.commit()
+        return {"id": ticket_id, "updated_at": now, "status": "updated"}
+    finally:
+        db.close()
+
+
+@app.post("/api/tickets/{ticket_id}/notes")
+def add_ticket_note(
+    ticket_id: int,
+    content: str = Query(..., description="Note content"),
+    author: str = Query("system", description="Note author"),
+):
+    """Add a note to a ticket."""
+    db = database.get_db()
+    try:
+        ticket = db.execute("SELECT id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if ticket is None:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        db.execute(
+            "INSERT INTO ticket_notes (ticket_id, content, author, created_at) VALUES (?, ?, ?, ?)",
+            (ticket_id, content, author, now),
+        )
+        db.commit()
+        return {"ticket_id": ticket_id, "content": content, "author": author, "created_at": now}
+    finally:
+        db.close()
+
+
+@app.get("/api/tickets/search")
+def search_tickets(
+    q: str = Query(..., description="Search keyword"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Search tickets by keyword across title, description, and ticket number."""
+    db = database.get_db()
+    try:
+        like = f"%{q}%"
+        rows = db.execute(
+            """SELECT * FROM tickets
+               WHERE ticket_number LIKE ? OR title LIKE ? OR description LIKE ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (like, like, like, limit),
+        ).fetchall()
+
+        results = [
+            {
+                "id": r["id"],
+                "ticket_number": r["ticket_number"],
+                "title": r["title"],
+                "type": r["type"],
+                "priority": r["priority"],
+                "status": r["status"],
+                "description": r["description"],
+                "customer_id": r["customer_id"],
+                "order_id": r["order_id"],
+                "assignee": r["assignee"],
+                "department": r["department"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+        return {"data": results, "total": len(results)}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — Returns / After-Sales
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/returns", status_code=201)
+def create_return(
+    order_id: str = Query(..., description="Order ID to return"),
+    type: str = Query("return", description="return|exchange|refund"),
+    reason: str = Query(..., description="Return reason"),
+    description: str = Query("", description="Detailed description"),
+    customer_id: int | None = Query(None),
+):
+    """Create a return/exchange/refund request."""
+    db = database.get_db()
+    try:
+        # Verify order exists
+        order = db.execute("SELECT id FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if order is None:
+            raise HTTPException(status_code=404, detail=f"Order '{order_id}' not found")
+
+        return_number = _next_return_number(db)
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        db.execute(
+            """INSERT INTO returns (return_number, order_id, customer_id, type, reason,
+               description, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+            (return_number, order_id, customer_id, type, reason, description, now, now),
+        )
+        db.commit()
+        new_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return {"id": new_id, "return_number": return_number, "status": "pending", "created_at": now}
+    finally:
+        db.close()
+
+
+@app.get("/api/returns/{return_id}")
+def get_return(return_id: int):
+    """Get a return request by ID."""
+    db = database.get_db()
+    try:
+        ret = db.execute("SELECT * FROM returns WHERE id = ?", (return_id,)).fetchone()
+        if ret is None:
+            raise HTTPException(status_code=404, detail=f"Return {return_id} not found")
+        return {
+            "id": ret["id"],
+            "return_number": ret["return_number"],
+            "order_id": ret["order_id"],
+            "customer_id": ret["customer_id"],
+            "type": ret["type"],
+            "reason": ret["reason"],
+            "description": ret["description"],
+            "status": ret["status"],
+            "refund_amount": ret["refund_amount"],
+            "created_at": ret["created_at"],
+            "updated_at": ret["updated_at"],
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/returns")
+def list_returns(
+    status: str | None = Query(None, description="Filter by status"),
+    customer_id: int | None = Query(None, description="Filter by customer"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List returns with optional filtering."""
+    db = database.get_db()
+    try:
+        query = "SELECT * FROM returns WHERE 1=1"
+        params: list[Any] = []
+
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if customer_id:
+            query += " AND customer_id = ?"
+            params.append(customer_id)
+
+        count_query = query.replace("SELECT *", "SELECT COUNT(*) AS cnt")
+        total = db.execute(count_query, params).fetchone()["cnt"]
+
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = db.execute(query, params).fetchall()
+        results = [
+            {
+                "id": r["id"],
+                "return_number": r["return_number"],
+                "order_id": r["order_id"],
+                "customer_id": r["customer_id"],
+                "type": r["type"],
+                "reason": r["reason"],
+                "description": r["description"],
+                "status": r["status"],
+                "refund_amount": r["refund_amount"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+        return {"data": results, "total": total, "offset": offset, "limit": limit}
+    finally:
+        db.close()
+
+
+@app.patch("/api/returns/{return_id}")
+def update_return_status(
+    return_id: int,
+    status: str = Query(..., description="pending|approved|rejected|in_transit|received|refunded|completed"),
+    note: str | None = Query(None, description="Optional note for status change"),
+):
+    """Update a return request status."""
+    db = database.get_db()
+    try:
+        ret = db.execute("SELECT * FROM returns WHERE id = ?", (return_id,)).fetchone()
+        if ret is None:
+            raise HTTPException(status_code=404, detail=f"Return {return_id} not found")
+
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        db.execute(
+            "UPDATE returns SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, return_id),
+        )
+        db.commit()
+        return {"id": return_id, "status": status, "updated_at": now, "note": note}
+    finally:
+        db.close()
+
+
+@app.get("/api/orders/{order_id}/returns")
+def get_order_returns(order_id: str):
+    """Get all return requests for a specific order."""
+    db = database.get_db()
+    try:
+        # Verify order exists
+        order = db.execute("SELECT id FROM orders WHERE id = ?", (order_id,)).fetchone()
+        if order is None:
+            raise HTTPException(status_code=404, detail=f"Order '{order_id}' not found")
+
+        rows = db.execute(
+            "SELECT * FROM returns WHERE order_id = ? ORDER BY created_at DESC",
+            (order_id,),
+        ).fetchall()
+
+        results = [
+            {
+                "id": r["id"],
+                "return_number": r["return_number"],
+                "order_id": r["order_id"],
+                "customer_id": r["customer_id"],
+                "type": r["type"],
+                "reason": r["reason"],
+                "description": r["description"],
+                "status": r["status"],
+                "refund_amount": r["refund_amount"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+        return {"data": results, "total": len(results), "order_id": order_id}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Helpers -- Survey number generation
+# ---------------------------------------------------------------------------
+
+
+def _next_survey_number(db: sqlite3.Connection) -> str:
+    """Generate the next survey number: SAT-YYYYMMDD-NNN."""
+    today = datetime.now().strftime("%Y%m%d")
+    prefix = f"SAT-{today}-"
+    row = db.execute(
+        "SELECT survey_number FROM satisfaction_surveys WHERE survey_number LIKE ? ORDER BY survey_number DESC LIMIT 1",
+        (f"{prefix}%",),
+    ).fetchone()
+    if row:
+        seq = int(row["survey_number"].rsplit("-", 1)[-1]) + 1
+    else:
+        seq = 1
+    return f"{prefix}{seq:03d}"
+
+
+# ---------------------------------------------------------------------------
+# Endpoints -- Satisfaction Surveys
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/surveys", status_code=201)
+def submit_survey(
+    customer_id: int | None = Query(None),
+    rating: int = Query(..., ge=1, le=5, description="Rating 1-5"),
+    feedback: str = Query("", description="Optional feedback text"),
+    order_id: str | None = Query(None),
+):
+    """Submit a customer satisfaction survey rating."""
+    db = database.get_db()
+    try:
+        survey_number = _next_survey_number(db)
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        db.execute(
+            """INSERT INTO satisfaction_surveys (survey_number, customer_id, order_id, rating, feedback_text, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (survey_number, customer_id, order_id, rating, feedback, now),
+        )
+        db.commit()
+        new_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return {"id": new_id, "survey_number": survey_number, "rating": rating, "created_at": now}
+    finally:
+        db.close()
+
+
+@app.get("/api/surveys")
+def list_surveys(
+    customer_id: int | None = Query(None),
+    rating: int | None = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List satisfaction surveys with optional filtering."""
+    db = database.get_db()
+    try:
+        query = "SELECT * FROM satisfaction_surveys WHERE 1=1"
+        params: list[Any] = []
+
+        if customer_id:
+            query += " AND customer_id = ?"
+            params.append(customer_id)
+        if rating:
+            query += " AND rating = ?"
+            params.append(rating)
+
+        count_query = query.replace("SELECT *", "SELECT COUNT(*) AS cnt")
+        total = db.execute(count_query, params).fetchone()["cnt"]
+
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        rows = db.execute(query, params).fetchall()
+        results = [
+            {
+                "id": r["id"],
+                "survey_number": r["survey_number"],
+                "customer_id": r["customer_id"],
+                "order_id": r["order_id"],
+                "rating": r["rating"],
+                "feedback_text": r["feedback_text"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+        return {"data": results, "total": total, "offset": offset, "limit": limit}
+    finally:
+        db.close()

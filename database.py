@@ -114,6 +114,70 @@ def init_db() -> None:
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tickets (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_number   TEXT    NOT NULL UNIQUE,
+                title           TEXT    NOT NULL,
+                type            TEXT    NOT NULL DEFAULT 'incident'
+                                CHECK(type IN ('incident','service_request','change_request','problem')),
+                priority        TEXT    NOT NULL DEFAULT 'P3'
+                                CHECK(priority IN ('P1','P2','P3','P4')),
+                status          TEXT    NOT NULL DEFAULT 'new'
+                                CHECK(status IN ('new','assigned','in_progress','pending','resolved','closed')),
+                description     TEXT    NOT NULL DEFAULT '',
+                customer_id     INTEGER REFERENCES customers(id),
+                order_id        TEXT    REFERENCES orders(id),
+                assignee        TEXT    DEFAULT '',
+                department      TEXT    DEFAULT '',
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_notes (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id   INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+                content     TEXT    NOT NULL,
+                author      TEXT    NOT NULL DEFAULT 'system',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS returns (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                return_number   TEXT    NOT NULL UNIQUE,
+                order_id        TEXT    NOT NULL REFERENCES orders(id),
+                customer_id     INTEGER REFERENCES customers(id),
+                type            TEXT    NOT NULL DEFAULT 'return'
+                                CHECK(type IN ('return','exchange','refund')),
+                reason          TEXT    NOT NULL,
+                description     TEXT    NOT NULL DEFAULT '',
+                status          TEXT    NOT NULL DEFAULT 'pending'
+                                CHECK(status IN (
+                                    'pending','approved','rejected','in_transit',
+                                    'received','refunded','completed'
+                                )),
+                refund_amount   REAL    DEFAULT 0.0,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS satisfaction_surveys (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                survey_number   TEXT    NOT NULL UNIQUE,
+                customer_id     INTEGER REFERENCES customers(id),
+                order_id        TEXT    REFERENCES orders(id),
+                rating          INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
+                feedback_text   TEXT    NOT NULL DEFAULT '',
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            )
+        """)
+
         # -----------------------------------------------------------------
         # Indexes
         # -----------------------------------------------------------------
@@ -127,6 +191,15 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ship_events_ship ON shipment_events(shipment_id, event_time)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_name   ON customers(name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_email  ON customers(email)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tickets_status   ON tickets(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tickets_customer ON tickets(customer_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tickets_order    ON tickets(order_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_returns_order    ON returns(order_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_returns_customer ON returns(customer_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_returns_status   ON returns(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_surveys_customer ON satisfaction_surveys(customer_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_surveys_order    ON satisfaction_surveys(order_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_surveys_rating   ON satisfaction_surveys(rating)")
 
         conn.commit()
     finally:
