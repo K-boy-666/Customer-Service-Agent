@@ -6,12 +6,14 @@ All functions return dicts ready for JSON serialization.
 """
 
 import os
+import uuid
 from typing import Any
 
 import httpx
 
 BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 API_KEY = os.getenv("API_KEY", "")
+IDENTITY_VERIFICATION = os.getenv("IDENTITY_VERIFICATION", "")
 
 
 def _headers() -> dict[str, str]:
@@ -19,6 +21,8 @@ def _headers() -> dict[str, str]:
     h = {"Accept": "application/json"}
     if API_KEY:
         h["Authorization"] = f"Bearer {API_KEY}"
+    if IDENTITY_VERIFICATION:
+        h["X-Identity-Verification"] = IDENTITY_VERIFICATION
     return h
 
 
@@ -27,6 +31,8 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any
     url = f"{BASE_URL.rstrip('/')}{path}"
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url, headers=_headers(), params=params)
+        if resp.status_code in (401, 403):
+            return {"error": "permission_denied", "status_code": resp.status_code, "detail": resp.text}
         resp.raise_for_status()
         return resp.json()
 
@@ -136,8 +142,12 @@ async def search_customers(query: str, limit: int = 20) -> list[dict[str, Any]]:
 async def _post(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Send a POST request to the order API. Returns the parsed JSON body."""
     url = f"{BASE_URL.rstrip('/')}{path}"
+    headers = _headers()
+    headers["Idempotency-Key"] = str(uuid.uuid4())
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, headers=_headers(), params=params)
+        resp = await client.post(url, headers=headers, params=params)
+        if resp.status_code in (401, 403):
+            return {"error": "permission_denied", "status_code": resp.status_code, "detail": resp.text}
         resp.raise_for_status()
         return resp.json()
 
@@ -145,8 +155,12 @@ async def _post(path: str, params: dict[str, Any] | None = None) -> dict[str, An
 async def _patch(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Send a PATCH request to the order API. Returns the parsed JSON body."""
     url = f"{BASE_URL.rstrip('/')}{path}"
+    headers = _headers()
+    headers["Idempotency-Key"] = str(uuid.uuid4())
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.patch(url, headers=_headers(), params=params)
+        resp = await client.patch(url, headers=headers, params=params)
+        if resp.status_code in (401, 403):
+            return {"error": "permission_denied", "status_code": resp.status_code, "detail": resp.text}
         resp.raise_for_status()
         return resp.json()
 

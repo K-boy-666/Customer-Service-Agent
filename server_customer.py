@@ -17,6 +17,7 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 import api_client
+from orchestrator_mcp_tool import handle_customer_message_tool
 
 # ---------------------------------------------------------------------------
 # FAQ — loaded once at startup
@@ -45,17 +46,58 @@ mcp = FastMCP(
     version="0.2.0",
     instructions=(
         "This server provides customer-service operations for the 客服智能体2.0 platform. "
-        "It has three tool groups:\n"
-        "1. Knowledge Base — search_faq, get_faq_categories, get_faq_by_id. "
+        "It has four tool groups:\n"
+        "1. Orchestrator runtime — handle_customer_message. Use this as the only "
+        "customer-facing entry point for complete routing and response composition.\n"
+        "2. Knowledge Base — search_faq, get_faq_categories, get_faq_by_id. "
         "Use these to answer customer questions about policies, products, and procedures.\n"
-        "2. Ticket Management — create_ticket, get_ticket, list_tickets, update_ticket, "
+        "3. Ticket Management — create_ticket, get_ticket, list_tickets, update_ticket, "
         "search_tickets. Follow the ITIL ticket lifecycle: new → assigned → in_progress → "
         "pending → resolved → closed. Priority levels: P1 (critical) through P4 (low).\n"
-        "3. After-Sales / Returns — create_return, get_return, list_returns, "
+        "4. After-Sales / Returns — create_return, get_return, list_returns, "
         "update_return_status. Return types: return (退货), exchange (换货), refund (退款). "
         "Return statuses: pending → approved → in_transit → received → refunded → completed."
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator runtime tool
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    annotations={
+        "openWorldHint": True,
+        "title": "Handle a customer message through the orchestrator",
+    },
+)
+async def handle_customer_message(
+    message: str,
+    customer_id: int = 0,
+    order_id: str = "",
+    conversation_id: str = "",
+    actor_subject: str = "mcp-orchestrator",
+    actor_role: str = "orchestrator",
+    verification_token: str = "",
+    idempotency_key: str = "",
+) -> str:
+    """Run the sole customer-facing orchestrator for one customer message.
+
+    This is the MCP entry point that enforces ADR-0001 in executable form:
+    callers send raw customer text here, and the runtime performs intent
+    analysis, sub-agent dispatch, tool calls, and response composition.
+    """
+    return handle_customer_message_tool(
+        message=message,
+        customer_id=customer_id,
+        order_id=order_id,
+        conversation_id=conversation_id,
+        actor_subject=actor_subject,
+        actor_role=actor_role,
+        verification_token=verification_token,
+        idempotency_key=idempotency_key,
+    )
 
 
 # ---------------------------------------------------------------------------
