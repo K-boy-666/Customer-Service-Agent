@@ -19,3 +19,11 @@ Thumbs.db
 
 # Claude
 .claude/worktrees/
+
+# SQLite临时文件
+*.db-shm
+*.db-wal
+
+# 本地手动测试脚本
+manual_*_test.py
+test_tokens.json
