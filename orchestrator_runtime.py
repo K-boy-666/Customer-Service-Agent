@@ -1,4 +1,4 @@
-"""Deterministic runtime for the customer-service orchestrator.
+﻿"""Deterministic runtime for the customer-service orchestrator.
 
 The prompt files describe how the orchestrator should behave. This module turns
 that contract into ordinary Python code so the routing, tool use, and response
@@ -17,6 +17,7 @@ from typing import Any, Callable
 import database
 import service_layer as svc
 from fastapi import HTTPException
+from kb_service import FaqRetrievalService, get_faq_retriever
 from security import Actor, Verification, run_idempotent
 
 
@@ -27,27 +28,27 @@ RATING_RE = re.compile(r"([1-5])\s*(?:星|分|star|stars)", re.IGNORECASE)
 L2_KEYWORDS = ("投诉", "曝光", "律师", "监管", "经理", "媒体", "315", "起诉", "法院")
 L3_KEYWORDS = ("自杀", "自残", "伤害自己", "杀了", "打死", "炸", "法院传票", "court order")
 AFTER_SALES_KEYWORDS = (
-    "退货",
-    "退款",
-    "换货",
-    "售后",
-    "坏了",
-    "故障",
-    "不灵",
-    "质量问题",
-    "保修",
+    "\u9000\u8d27",
+    "\u9000\u6b3e",
+    "\u6362\u8d27",
+    "\u552e\u540e",
+    "\u574f\u4e86",
+    "\u6545\u969c",
+    "\u4e0d\u7075",
+    "\u8d28\u91cf\u95ee\u9898",
 )
 ORDER_KEYWORDS = ("订单", "物流", "快递", "发货", "到哪", "运单", "签收", "会员", "积分")
 CONSULTATION_KEYWORDS = (
-    "怎么",
-    "如何",
-    "规则",
-    "政策",
-    "多久",
-    "多少天",
-    "发票",
-    "权益",
-    "产品",
+    "\u600e\u4e48",
+    "\u5982\u4f55",
+    "\u89c4\u5219",
+    "\u653f\u7b56",
+    "\u591a\u4e45",
+    "\u591a\u5c11\u5929",
+    "\u53d1\u7968",
+    "\u6743\u76ca",
+    "\u4ea7\u54c1",
+    "\u4fdd\u4fee",
 )
 WORK_ORDER_KEYWORDS = ("工单", "ticket", "进度", "派单")
 
@@ -131,6 +132,7 @@ class LocalCustomerServiceTools:
     def __init__(
         self,
         faq_path: str | Path | None = None,
+        faq_retriever: FaqRetrievalService | None = None,
         root_actor: Actor | None = None,
         verification: Verification | None = None,
         idempotency_key: str = "",
@@ -138,6 +140,7 @@ class LocalCustomerServiceTools:
     ):
         self.faq_path = Path(faq_path or Path(__file__).parent / "faq.json")
         self._faq: list[dict[str, Any]] | None = None
+        self._faq_retriever = faq_retriever or get_faq_retriever(str(self.faq_path))
         self.root_actor = root_actor or Actor("orchestrator-runtime", "orchestrator", {})
         self.verification = verification
         self.idempotency_key = idempotency_key
@@ -176,21 +179,7 @@ class LocalCustomerServiceTools:
             return svc.get_customer(session, self._agent("order_inquiry"), customer_id, self.verification)
 
     def search_faq(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
-        q = query.lower()
-        scored: list[tuple[int, dict[str, Any]]] = []
-        for entry in self._load_faq():
-            score = 0
-            if q and q in entry["question"].lower():
-                score += 10
-            for keyword in entry.get("keywords", []):
-                if q and q in keyword.lower():
-                    score += 5
-            if q and q in entry["answer"].lower():
-                score += 2
-            if score > 0:
-                scored.append((score, entry))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [entry for _score, entry in scored[:limit]]
+        return self._faq_retriever.search(query, limit=limit)
 
     def create_ticket(
         self,
@@ -311,12 +300,15 @@ class CustomerServiceOrchestrator:
     def __init__(
         self,
         tools: LocalCustomerServiceTools | None = None,
+        faq_retriever: FaqRetrievalService | None = None,
         actor: Actor | None = None,
         verification: Verification | None = None,
         idempotency_key: str = "",
         request_id: str = "",
     ):
+        self.faq_retriever = faq_retriever
         self.tools = tools or LocalCustomerServiceTools(
+            faq_retriever=faq_retriever,
             root_actor=actor,
             verification=verification,
             idempotency_key=idempotency_key,
@@ -337,6 +329,7 @@ class CustomerServiceOrchestrator:
     ) -> dict[str, Any]:
         if actor or verification or idempotency_key or request_id:
             self.tools = LocalCustomerServiceTools(
+                faq_retriever=self.faq_retriever,
                 root_actor=actor,
                 verification=verification,
                 idempotency_key=idempotency_key,
@@ -612,7 +605,7 @@ class CustomerServiceOrchestrator:
         )
 
     def _handle_consultation(self, context: CustomerContext) -> AgentResult:
-        query = self._faq_query(context.message)
+        query = context.message
         entries = self._call_tool("search_faq", self.tools.search_faq, query)
         if not entries:
             return AgentResult(
@@ -863,3 +856,4 @@ class CustomerServiceOrchestrator:
                 seen.add(value)
                 result.append(value)
         return result
+

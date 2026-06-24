@@ -14,6 +14,11 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
 ]
 
+[project.optional-dependencies]
+rag = [
+    "sentence-transformers>=2.2.0",
+]
+
 [project.scripts]
 order-server = "server:main"
 seed-orders = "seed_data:main"

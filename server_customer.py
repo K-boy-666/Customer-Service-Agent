@@ -17,6 +17,7 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 import api_client
+from kb_service import get_faq_retriever
 from orchestrator_mcp_tool import handle_customer_message_tool
 
 # ---------------------------------------------------------------------------
@@ -33,9 +34,10 @@ def _load_faq() -> list[dict]:
 
 
 FAQ = _load_faq()
+FAQ_RETRIEVER = get_faq_retriever(str(FAQ_PATH))
 
 # Pre-compute category list for fast lookup
-FAQ_CATEGORIES = sorted({entry["category"] for entry in FAQ})
+FAQ_CATEGORIES = [row["category"] for row in FAQ_RETRIEVER.categories()]
 
 # ---------------------------------------------------------------------------
 # Server
@@ -113,62 +115,20 @@ async def handle_customer_message(
     },
 )
 async def search_faq(query: str, category: str = "", limit: int = 10) -> str:
-    """Search the FAQ knowledge base by keyword.
+    """Search the FAQ knowledge base with semantic RAG retrieval.
 
-    Matches against question text, answer text, and keyword tags.
-    Use this to answer customer questions about return policy, warranty,
-    shipping, membership, payment, and product specifications.
-
-    Args:
-        query: Search keyword(s) in Chinese or English.
-        category: Optional category filter (e.g., "退货政策", "产品咨询").
-                  Call get_faq_categories first to see available categories.
-        limit: Max results to return (default 10).
+    The retriever uses a local embedding model when available and falls back
+    to an in-process lexical index when optional model dependencies are absent.
     """
-    q = query.lower()
-    results = []
-
-    for entry in FAQ:
-        # Category filter
-        if category and entry["category"] != category:
-            continue
-
-        # Score: match in question > keywords > answer
-        score = 0
-        if q in entry["question"].lower():
-            score += 10
-        for kw in entry.get("keywords", []):
-            if q in kw.lower():
-                score += 5
-        if q in entry["answer"].lower():
-            score += 2
-
-        if score > 0:
-            results.append((score, entry))
-
-    # Sort by score descending, take top N
-    results.sort(key=lambda x: x[0], reverse=True)
-    top = results[:limit]
-
-    if not top:
+    results = FAQ_RETRIEVER.search(query, limit=limit, category=category)
+    if not results:
         all_cats = ", ".join(FAQ_CATEGORIES)
         return (
             f"No FAQ entries found for '{query}'. "
             f"Try different keywords or a broader search. "
             f"Available categories: {all_cats}"
         )
-
-    out = []
-    for score, entry in top:
-        out.append({
-            "id": entry["id"],
-            "category": entry["category"],
-            "question": entry["question"],
-            "answer": entry["answer"],
-            "relevance": score,
-        })
-
-    return json.dumps(out, ensure_ascii=False, indent=2)
+    return json.dumps(results, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -184,16 +144,7 @@ async def get_faq_categories() -> str:
     Use this first to understand what topics the knowledge base covers,
     then use search_faq with a category filter for targeted results.
     """
-    counts = {}
-    for entry in FAQ:
-        cat = entry["category"]
-        counts[cat] = counts.get(cat, 0) + 1
-
-    out = [
-        {"category": cat, "entry_count": counts[cat]}
-        for cat in FAQ_CATEGORIES
-    ]
-    return json.dumps(out, ensure_ascii=False, indent=2)
+    return json.dumps(FAQ_RETRIEVER.categories(), ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -209,9 +160,9 @@ async def get_faq_by_id(faq_id: str) -> str:
     Use this when you already know the FAQ ID from a previous search_faq result,
     or when you need the full details of a specific FAQ entry.
     """
-    for entry in FAQ:
-        if entry["id"] == faq_id:
-            return json.dumps(entry, ensure_ascii=False, indent=2)
+    entry = FAQ_RETRIEVER.get_by_id(faq_id)
+    if entry is not None:
+        return json.dumps(entry, ensure_ascii=False, indent=2)
     return f"FAQ entry '{faq_id}' not found. Use search_faq to find relevant entries."
 
 
