@@ -226,6 +226,13 @@ def list_tickets(status_filter: str | None = Query(None, alias="status"), assign
     return svc.list_tickets(session, actor, status_filter, assignee, limit, offset)
 
 
+@app.get("/api/tickets/search")
+def search_tickets(query: str = Query(..., alias="q"), limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
+    data = svc.list_tickets(session, actor, None, None, limit=100, offset=0)["data"]
+    matches = [ticket for ticket in data if query in ticket["title"] or query in ticket["description"] or query in ticket["ticket_number"]]
+    return {"data": matches[:limit], "total": len(matches[:limit])}
+
+
 @app.get("/api/tickets/{ticket_id}")
 def get_ticket(ticket_id: int, actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
     return svc.get_ticket(session, actor, ticket_id)
@@ -281,11 +288,6 @@ def add_ticket_note(
     return JSONResponse(status_code=code, content=response)
 
 
-@app.get("/api/tickets/search")
-def search_tickets(query: str = Query(..., alias="q"), limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
-    data = svc.list_tickets(session, actor, None, None, limit=100, offset=0)["data"]
-    matches = [ticket for ticket in data if query in ticket["title"] or query in ticket["description"] or query in ticket["ticket_number"]]
-    return {"data": matches[:limit], "total": len(matches[:limit])}
 
 
 @app.post("/api/returns", status_code=201)

@@ -8,6 +8,8 @@ __pycache__/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 
 # IDE
 .vscode/
@@ -19,7 +21,13 @@ Thumbs.db
 
 # Claude
 .claude/worktrees/
+
 # Generated reports
 reports/daily/*.md
+
 # Local Codex skills
 .agents/skills/*
+
+# Local manual test scripts
+manual_*_test.py
+test_tokens.json
