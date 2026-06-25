@@ -1,4 +1,4 @@
-"""End-to-end tests for Agent runtime, REST API, and MCP entrypoint."""
+﻿"""End-to-end tests for Agent runtime, REST API, and MCP entrypoint."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import database
 import seed_data
-from models import Order, ReturnRequest, Ticket
+from models import CustomerServiceUsageEvent, Order, ReturnRequest, Ticket
 from orchestrator_runtime import CustomerServiceOrchestrator
 from security import Actor, create_dev_jwt, load_verification, request_otp, verify_otp
 
@@ -68,6 +68,7 @@ class OrchestratorE2ETest(unittest.TestCase):
 
     def test_agent_runtime_routes_order_inquiry_and_preserves_protocol_output(self):
         order_id, customer_id, verification_token = self._first_order("delivered")
+        before_usage_events = self._count(CustomerServiceUsageEvent)
         session = database.get_session()
         try:
             verification = load_verification(session, verification_token)
@@ -76,7 +77,7 @@ class OrchestratorE2ETest(unittest.TestCase):
         runtime = CustomerServiceOrchestrator(actor=Actor("api-user", "orchestrator", {}), verification=verification)
 
         result = runtime.handle_message(
-            message=f"我的订单 {order_id} 物流到哪里了？",
+            message=f"\u8ba2\u5355 {order_id} \u7269\u6d41\u5230\u54ea\u91cc\u4e86?",
             customer_id=customer_id,
             conversation_id="agent-e2e-order",
             actor=Actor("api-user", "orchestrator", {}),
@@ -87,7 +88,8 @@ class OrchestratorE2ETest(unittest.TestCase):
         self.assertIn("order-inquiry-agent", result["dispatched_agents"])
         self.assertIn(order_id, result["customer_reply"])
         self.assertTrue({"get_order", "get_shipment"}.issubset({call["tool"] for call in result["tool_calls"]}))
-        self.assertIn("【客户回复】", result["agent_results"][0]["protocol_output"])
+        self.assertIn("protocol_output", result["agent_results"][0])
+        self.assertEqual(self._count(CustomerServiceUsageEvent), before_usage_events + 1)
 
     def test_api_endpoint_creates_after_sales_refund_request(self):
         from fastapi.testclient import TestClient
@@ -104,7 +106,7 @@ class OrchestratorE2ETest(unittest.TestCase):
             response = client.post(
                 "/api/orchestrator/respond",
                 json={
-                    "message": f"订单 {order_id} 的商品有质量问题，我要申请退款",
+                    "message": f"\u8ba2\u5355 {order_id} \u7684\u5546\u54c1\u6709\u8d28\u91cf\u95ee\u9898\uff0c\u6211\u8981\u7533\u8bf7\u9000\u6b3e",
                     "customer_id": customer_id,
                     "conversation_id": "api-e2e-refund",
                 },
@@ -125,7 +127,7 @@ class OrchestratorE2ETest(unittest.TestCase):
         before = self._count(Ticket)
         raw = asyncio.run(
             server_customer.handle_customer_message(
-                message=f"我要投诉，订单 {order_id} 一直没到，再不处理我就找315曝光",
+                message=f"\u6211\u8981\u6295\u8bc9\uff0c\u8ba2\u5355 {order_id} \u4e00\u76f4\u6ca1\u5230\uff0c\u518d\u4e0d\u5904\u7406\u6211\u5c31\u627e315\u66dd\u5149",
                 customer_id=customer_id,
                 conversation_id="mcp-e2e-complaint",
                 actor_subject="mcp-user",
@@ -150,7 +152,7 @@ class OrchestratorE2ETest(unittest.TestCase):
         before = self._count(ReturnRequest)
         raw = asyncio.run(
             server_customer.handle_customer_message(
-                message=f"订单 {order_id} 的商品坏了，我要退款",
+                message=f"\u8ba2\u5355 {order_id} \u7684\u5546\u54c1\u574f\u4e86\uff0c\u6211\u8981\u9000\u6b3e",
                 customer_id=customer_id,
                 actor_subject="complaint-only",
                 actor_role="complaint",
@@ -165,3 +167,4 @@ class OrchestratorE2ETest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

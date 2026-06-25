@@ -1,4 +1,4 @@
-"""
+﻿"""
 HTTP client for the local order REST API.
 
 Reads API_BASE_URL and optional API_KEY from environment variables.
@@ -86,6 +86,12 @@ async def get_orders_by_customer(
 async def get_order_stats(period: str = "today") -> dict[str, Any]:
     """Get aggregate stats: total count, revenue, breakdown by status."""
     return await _get("/api/orders/stats", {"period": period})
+async def get_usage_analytics(date: str = "yesterday") -> dict[str, Any]:
+    """Get aggregate customer-service usage analytics for a report date."""
+    params: dict[str, Any] = {}
+    if date:
+        params["date"] = date
+    return await _get("/api/analytics/usage", params)
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +141,7 @@ async def search_customers(query: str, limit: int = 20) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers — POST / PATCH
+# Internal helpers 鈥?POST / PATCH
 # ---------------------------------------------------------------------------
 
 
@@ -349,3 +355,4 @@ async def submit_satisfaction(
     if order_id:
         params["order_id"] = order_id
     return await _post("/api/surveys", params)
+

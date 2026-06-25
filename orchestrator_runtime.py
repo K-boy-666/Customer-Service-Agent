@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import analytics_service
 import database
 import service_layer as svc
 from fastapi import HTTPException
@@ -354,7 +355,9 @@ class CustomerServiceOrchestrator:
                 agent_results=[],
                 tool_calls=[],
             )
-            return run.to_dict()
+            result = run.to_dict()
+            self._record_usage_event(result, context)
+            return result
 
         emotional_level = self._classify_emotion(context.message)
         intents = self.analyze_intents(context, emotional_level)
@@ -378,7 +381,7 @@ class CustomerServiceOrchestrator:
         needs_human = any(result.status == "needs-escalation" for result in results)
         status = self._overall_status(results, needs_human)
 
-        return OrchestratorRun(
+        run = OrchestratorRun(
             status=status,
             conversation_id=context.conversation_id or "",
             customer_reply=customer_reply,
@@ -388,7 +391,10 @@ class CustomerServiceOrchestrator:
             agent_results=results,
             tool_calls=self.tool_calls,
             needs_human=needs_human,
-        ).to_dict()
+        )
+        result = run.to_dict()
+        self._record_usage_event(result, context)
+        return result
 
     def analyze_intents(
         self, context: CustomerContext, emotional_level: str
@@ -720,6 +726,26 @@ class CustomerServiceOrchestrator:
             "satisfaction": self._handle_satisfaction,
         }.get(intent)
 
+    def _record_usage_event(
+        self,
+        result: dict[str, Any],
+        context: CustomerContext,
+        failure_reason: str = "",
+    ) -> None:
+        try:
+            with database.session_scope() as session:
+                analytics_service.record_usage_event_from_result(
+                    session,
+                    result,
+                    customer_id=context.customer_id,
+                    order_id=context.order_id,
+                    message_length=len(context.message),
+                    failure_reason=failure_reason,
+                )
+        except Exception:
+            # Analytics must never block the customer response path.
+            return
+
     def _call_tool(self, name: str, func: Callable[..., Any], *args: Any) -> Any:
         try:
             result = func(*args)
@@ -856,4 +882,8 @@ class CustomerServiceOrchestrator:
                 seen.add(value)
                 result.append(value)
         return result
+
+
+
+
 

@@ -1,4 +1,4 @@
-"""Authentication, RBAC, OTP, PII masking, audit, and idempotency helpers."""
+﻿"""Authentication, RBAC, OTP, PII masking, audit, and idempotency helpers."""
 
 from __future__ import annotations
 
@@ -26,9 +26,10 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "work_order": {"ticket:create", "ticket:read", "ticket:update", "survey:create", "survey:read"},
     "complaint": {"audit:create"},
     "human_handoff": {"audit:create"},
+    "data_analysis": {"analytics:read"},
 }
 
-READ_PERMISSIONS = {"order:read", "shipment:read", "customer:read", "faq:read", "ticket:read", "return:read", "survey:read"}
+READ_PERMISSIONS = {"order:read", "shipment:read", "customer:read", "faq:read", "ticket:read", "return:read", "survey:read", "analytics:read"}
 
 
 @dataclass(frozen=True)
@@ -338,3 +339,5 @@ async def actor_dependency(authorization: str | None = Header(None, alias="Autho
 
 async def request_id_dependency(request: Request) -> str:
     return request.headers.get("X-Request-ID", "")
+
+

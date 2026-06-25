@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for the customer-service platform."""
+﻿"""SQLAlchemy ORM models for the customer-service platform."""
 
 from __future__ import annotations
 
@@ -171,6 +171,22 @@ class SatisfactionSurvey(Base):
     feedback_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
 
+class CustomerServiceUsageEvent(Base):
+    __tablename__ = "customer_service_usage_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    customer_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    order_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    emotional_level: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    message_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    intents: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    dispatched_agents: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    tool_calls: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    needs_human: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False, index=True)
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"
@@ -221,3 +237,4 @@ class OtpChallenge(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+

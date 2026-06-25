@@ -1,10 +1,11 @@
-"""Production-oriented REST API for the customer-service platform."""
+﻿"""Production-oriented REST API for the customer-service platform."""
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import Any, Iterator
 
+import analytics_service
 import database
 import seed_data
 import service_layer as svc
@@ -126,6 +127,15 @@ def orchestrator_respond(
     )
     return result
 
+
+
+@app.get("/api/analytics/usage")
+def get_usage_analytics(
+    date: str | None = Query(None),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+):
+    return analytics_service.get_usage_analytics(session, actor, date)
 
 @app.get("/api/orders/search")
 def search_orders(q: str = Query(...), limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
@@ -376,3 +386,4 @@ def submit_survey(
 @app.get("/api/surveys")
 def list_surveys(customer_id: int | None = Query(None), rating: int | None = Query(None), limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
     return svc.list_surveys(session, actor, customer_id, rating, limit, offset)
+
