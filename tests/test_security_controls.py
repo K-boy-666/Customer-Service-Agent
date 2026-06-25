@@ -52,6 +52,11 @@ class SecurityControlsTest(unittest.TestCase):
         result = verify_otp(session, challenge["challenge_id"], challenge["dev_code"])
         return load_verification(session, result["verification_token"])
 
+    def _verification_for(self, session, customer_id=None, order_id=None):
+        challenge = request_otp(session, "customer_identity", "email", "test@example.com", customer_id, order_id)
+        result = verify_otp(session, challenge["challenge_id"], challenge["dev_code"])
+        return load_verification(session, result["verification_token"])
+
     def test_jwt_valid_and_invalid_role(self):
         token = create_dev_jwt("agent-1", "order_inquiry")
         actor = decode_jwt_token(token)
@@ -92,6 +97,56 @@ class SecurityControlsTest(unittest.TestCase):
             full = svc.get_order(session, actor, order.id, verified)
             self.assertIn("@", full["customer_email"])
             self.assertNotIn("***", full["shipping_address"])
+        finally:
+            session.close()
+
+    def test_unscoped_verification_cannot_access_protected_customer_or_order_resources(self):
+        session = database.get_session()
+        try:
+            actor = Actor("agent", "order_inquiry", {})
+            after_sales = Actor("agent", "after_sales", {})
+            order = session.query(Order).filter_by(status="delivered").first()
+            verification = self._verification_for(session)
+
+            for action in (
+                lambda: svc.get_order(session, actor, order.id, verification),
+                lambda: svc.get_customer(session, actor, order.customer_id, verification),
+                lambda: svc.create_return(session, after_sales, order.id, "refund", "quality", "", order.customer_id, verification),
+            ):
+                with self.assertRaises(HTTPException) as cm:
+                    action()
+                self.assertEqual(cm.exception.status_code, 403)
+        finally:
+            session.close()
+
+    def test_customer_scoped_verification_allows_owned_orders_and_rejects_other_customers(self):
+        session = database.get_session()
+        try:
+            actor = Actor("agent", "order_inquiry", {})
+            owned = session.query(Order).filter_by(status="delivered").first()
+            other = session.query(Order).filter(Order.customer_id != owned.customer_id).first()
+            verification = self._verification_for(session, customer_id=owned.customer_id)
+
+            full = svc.get_order(session, actor, owned.id, verification)
+            self.assertEqual(full["id"], owned.id)
+
+            with self.assertRaises(HTTPException) as cm:
+                svc.get_order(session, actor, other.id, verification)
+            self.assertEqual(cm.exception.status_code, 403)
+        finally:
+            session.close()
+
+    def test_order_scoped_verification_rejects_wrong_order(self):
+        session = database.get_session()
+        try:
+            actor = Actor("agent", "order_inquiry", {})
+            owned = session.query(Order).filter_by(status="delivered").first()
+            other = session.query(Order).filter(Order.id != owned.id).first()
+            verification = self._verification_for(session, order_id=owned.id)
+
+            with self.assertRaises(HTTPException) as cm:
+                svc.get_order(session, actor, other.id, verification)
+            self.assertEqual(cm.exception.status_code, 403)
         finally:
             session.close()
 

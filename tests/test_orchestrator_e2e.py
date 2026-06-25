@@ -1,4 +1,4 @@
-﻿"""End-to-end tests for Agent runtime, REST API, and MCP entrypoint."""
+"""End-to-end tests for Agent runtime, REST API, and MCP entrypoint."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+from fastapi import HTTPException
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -90,6 +92,32 @@ class OrchestratorE2ETest(unittest.TestCase):
         self.assertTrue({"get_order", "get_shipment"}.issubset({call["tool"] for call in result["tool_calls"]}))
         self.assertIn("protocol_output", result["agent_results"][0])
         self.assertEqual(self._count(CustomerServiceUsageEvent), before_usage_events + 1)
+
+    def test_agent_runtime_records_failed_usage_event_when_tool_raises(self):
+        order_id, customer_id, _verification_token = self._first_order("delivered")
+        before_usage_events = self._count(CustomerServiceUsageEvent)
+        runtime = CustomerServiceOrchestrator(actor=Actor("api-user", "orchestrator", {}))
+
+        with self.assertRaises(HTTPException):
+            runtime.handle_message(
+                message=f"订单 {order_id} 物流到哪里了?",
+                customer_id=customer_id,
+                conversation_id="agent-e2e-failed-tool",
+                actor=Actor("api-user", "orchestrator", {}),
+            )
+
+        self.assertEqual(self._count(CustomerServiceUsageEvent), before_usage_events + 1)
+        session = database.get_session()
+        try:
+            event = session.query(CustomerServiceUsageEvent).filter_by(conversation_id="agent-e2e-failed-tool").one()
+            self.assertEqual(event.status, "failed")
+            self.assertEqual(event.customer_id, customer_id)
+            self.assertEqual(event.order_id, order_id)
+            self.assertIn("missing_identity_verification", event.failure_reason)
+            self.assertIn("failed", {call["status"] for call in event.tool_calls})
+            self.assertNotIn("物流到哪里", str(event.intents) + str(event.tool_calls) + event.failure_reason)
+        finally:
+            session.close()
 
     def test_api_endpoint_creates_after_sales_refund_request(self):
         from fastapi.testclient import TestClient

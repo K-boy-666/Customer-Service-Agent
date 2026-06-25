@@ -19,3 +19,5 @@ Thumbs.db
 
 # Claude
 .claude/worktrees/
+# Generated reports
+reports/daily/*.md

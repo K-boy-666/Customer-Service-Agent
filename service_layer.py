@@ -330,6 +330,11 @@ def create_ticket(
     request_id: str = "",
 ) -> dict[str, Any]:
     require_permission(actor, "ticket:create")
+    if order_id and customer_id is None:
+        order = session.get(Order, order_id)
+        if order is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Order '{order_id}' not found")
+        customer_id = order.customer_id
     assert_verification_matches(verification, customer_id=customer_id, order_id=order_id)
     ticket = Ticket(
         ticket_number=_next_number(session, Ticket, "ticket_number", "TK"),
@@ -496,6 +501,11 @@ def submit_survey(
     request_id: str = "",
 ) -> dict[str, Any]:
     require_permission(actor, "survey:create")
+    if order_id and customer_id is None:
+        order = session.get(Order, order_id)
+        if order is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Order '{order_id}' not found")
+        customer_id = order.customer_id
     assert_verification_matches(verification, customer_id=customer_id, order_id=order_id)
     survey = SatisfactionSurvey(
         survey_number=_next_number(session, SatisfactionSurvey, "survey_number", "SAT"),

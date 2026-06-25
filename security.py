@@ -1,4 +1,4 @@
-﻿"""Authentication, RBAC, OTP, PII masking, audit, and idempotency helpers."""
+"""Authentication, RBAC, OTP, PII masking, audit, and idempotency helpers."""
 
 from __future__ import annotations
 
@@ -316,10 +316,26 @@ def assert_verification_matches(
     customer_id: int | None = None,
     order_id: str | None = None,
 ) -> None:
-    if customer_id is not None and verification.customer_id is not None and verification.customer_id != customer_id:
+    protected_scope_requested = customer_id is not None or order_id is not None
+    verification_has_scope = verification.customer_id is not None or verification.order_id is not None
+    if protected_scope_requested and not verification_has_scope:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="verification_scope_required")
+
+    if verification.order_id is not None:
+        if order_id is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="verification_order_scope_required")
+        if verification.order_id != order_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="verification_order_mismatch")
+        if verification.customer_id is not None and customer_id is not None and verification.customer_id != customer_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="verification_customer_mismatch")
+        return
+
+    if customer_id is not None and verification.customer_id != customer_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="verification_customer_mismatch")
-    if order_id is not None and verification.order_id is not None and verification.order_id != order_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="verification_order_mismatch")
+
+    if order_id is not None and verification.customer_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="verification_customer_scope_required")
+
 
 
 def customer_destination(session: Session, customer_id: int | None, channel: str, destination: str | None) -> str:

@@ -1,4 +1,4 @@
-﻿"""Tests for daily customer-service usage analytics."""
+"""Tests for daily customer-service usage analytics."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ class DailyAnalyticsTest(unittest.TestCase):
         os.close(fd)
         os.environ["DATABASE_URL"] = "sqlite+pysqlite:///" + self.db_path.replace("\\", "/")
         os.environ["AUTH_DEV_SECRET"] = "test-secret"
+        os.environ["REPORT_TIMEZONE"] = "Asia/Shanghai"
         database.reset_engine_for_tests()
         database.init_db()
         session = database.get_session()
@@ -37,6 +38,7 @@ class DailyAnalyticsTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         database.reset_engine_for_tests("sqlite+pysqlite:///:memory:")
+        os.environ.pop("REPORT_TIMEZONE", None)
         for suffix in ("", "-wal", "-shm"):
             path = f"{self.db_path}{suffix}"
             if os.path.exists(path):
@@ -94,6 +96,9 @@ class DailyAnalyticsTest(unittest.TestCase):
         finally:
             session.close()
 
+        self.assertEqual(data["timezone"], "Asia/Shanghai")
+        self.assertEqual(data["window"]["start_utc"], "2026-06-22T16:00:00")
+        self.assertEqual(data["window"]["end_utc"], "2026-06-23T16:00:00")
         self.assertEqual(data["usage"]["total_conversations"], 2)
         self.assertEqual(data["usage"]["unique_customers"], 2)
         self.assertEqual(data["routing"]["intent_counts"]["order_inquiry"], 1)
@@ -105,6 +110,49 @@ class DailyAnalyticsTest(unittest.TestCase):
         self.assertNotIn("customer_reply", str(data).lower())
         self.assertNotIn("raw_message", str(data).lower())
         self.assertTrue(data["recommendations"])
+
+    def test_business_day_uses_report_timezone_for_utc_boundaries(self):
+        session = database.get_session()
+        try:
+            analytics_service.record_usage_event(
+                session,
+                conversation_id="shanghai-day",
+                customer_id=1,
+                order_id=None,
+                message_length=10,
+                status="success",
+                emotional_level="L1",
+                intents=[{"intent": "consultation"}],
+                dispatched_agents=["consultation-agent"],
+                tool_calls=[],
+                needs_human=False,
+            )
+            analytics_service.record_usage_event(
+                session,
+                conversation_id="next-shanghai-day",
+                customer_id=2,
+                order_id=None,
+                message_length=10,
+                status="success",
+                emotional_level="L1",
+                intents=[{"intent": "consultation"}],
+                dispatched_agents=["consultation-agent"],
+                tool_calls=[],
+                needs_human=False,
+            )
+            rows = session.query(analytics_service.CustomerServiceUsageEvent).order_by(analytics_service.CustomerServiceUsageEvent.id).all()
+            rows[-2].created_at = datetime(2026, 6, 22, 16, 30, 0)
+            rows[-1].created_at = datetime(2026, 6, 23, 16, 30, 0)
+            session.commit()
+            data = analytics_service.get_usage_analytics(session, Actor("analyst", "data_analysis", {}), "2026-06-23")
+        finally:
+            session.close()
+
+        self.assertEqual(data["timezone"], "Asia/Shanghai")
+        self.assertEqual(data["window"]["start_utc"], "2026-06-22T16:00:00")
+        self.assertEqual(data["window"]["end_utc"], "2026-06-23T16:00:00")
+        self.assertEqual(data["usage"]["total_conversations"], 1)
+        self.assertEqual(data["routing"]["intent_counts"], {"consultation": 1})
 
     def test_rest_endpoint_allows_data_analysis_and_denies_order_inquiry(self):
         self._seed_analytics_rows()
@@ -134,6 +182,8 @@ class DailyAnalyticsTest(unittest.TestCase):
             with open(report_path, encoding="utf-8") as report_file:
                 body = report_file.read()
             self.assertIn("Daily Overview", body)
+            self.assertIn("Timezone: Asia/Shanghai", body)
+            self.assertIn("Window UTC: 2026-06-22T16:00:00 to 2026-06-23T16:00:00", body)
             self.assertIn("Conversations: 2", body)
 
 

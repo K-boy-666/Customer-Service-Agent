@@ -1,9 +1,11 @@
-﻿"""Usage analytics collection and daily report aggregation."""
+"""Usage analytics collection and daily report aggregation."""
 
 from __future__ import annotations
 
+import os
 from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from typing import Any
 
@@ -14,19 +16,38 @@ from models import AuditEvent, CustomerServiceUsageEvent, ReturnRequest, Satisfa
 from security import Actor, require_permission
 
 
-def parse_report_date(value: str | date | None) -> date:
+def report_timezone_name() -> str:
+    return os.getenv("REPORT_TIMEZONE", "Asia/Shanghai")
+
+
+def _report_timezone():
+    name = report_timezone_name()
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        if name == "Asia/Shanghai":
+            return timezone(timedelta(hours=8), name)
+        raise
+
+
+def parse_report_date(value: str | date | None, tz: Any | None = None) -> date:
+    report_tz = tz or _report_timezone()
     if isinstance(value, date):
         return value
     if not value or value == "yesterday":
-        return datetime.now().date() - timedelta(days=1)
+        return datetime.now(report_tz).date() - timedelta(days=1)
     if value == "today":
-        return datetime.now().date()
+        return datetime.now(report_tz).date()
     return date.fromisoformat(value)
 
 
-def _window(report_date: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(report_date, time.min)
-    return start, start + timedelta(days=1)
+def _window(report_date: date, tz: Any | None = None) -> tuple[datetime, datetime]:
+    report_tz = tz or _report_timezone()
+    local_start = datetime.combine(report_date, time.min, tzinfo=report_tz)
+    local_end = local_start + timedelta(days=1)
+    start_utc = local_start.astimezone(timezone.utc).replace(tzinfo=None)
+    end_utc = local_end.astimezone(timezone.utc).replace(tzinfo=None)
+    return start_utc, end_utc
 
 
 def _iso(dt: datetime) -> str:
@@ -109,8 +130,9 @@ def record_usage_event_from_result(
 
 def get_usage_analytics(session: Session, actor: Actor, report_date: str | date | None = None) -> dict[str, Any]:
     require_permission(actor, "analytics:read")
-    target_date = parse_report_date(report_date)
-    start, end = _window(target_date)
+    report_tz = _report_timezone()
+    target_date = parse_report_date(report_date, report_tz)
+    start, end = _window(target_date, report_tz)
 
     events = (
         session.query(CustomerServiceUsageEvent)
@@ -186,8 +208,9 @@ def get_usage_analytics(session: Session, actor: Actor, report_date: str | date 
     }
     return {
         "date": target_date.isoformat(),
+        "timezone": report_timezone_name(),
         "generated_at": _iso(datetime.now(timezone.utc).replace(tzinfo=None)),
-        "window": {"start": _iso(start), "end": _iso(end)},
+        "window": {"start": _iso(start), "end": _iso(end), "start_utc": _iso(start), "end_utc": _iso(end)},
         "usage": usage,
         "routing": routing,
         "operations": operations,
@@ -225,6 +248,8 @@ def render_markdown_report(analytics: dict[str, Any]) -> str:
         f"# Customer Service Daily Analytics - {analytics['date']}",
         "",
         f"Generated at: {analytics['generated_at']} UTC",
+        f"Timezone: {analytics.get('timezone', 'UTC')}",
+        f"Window UTC: {analytics.get('window', {}).get('start_utc', analytics.get('window', {}).get('start', ''))} to {analytics.get('window', {}).get('end_utc', analytics.get('window', {}).get('end', ''))}",
         "",
         "## Daily Overview",
         f"- Conversations: {analytics['usage']['total_conversations']}",

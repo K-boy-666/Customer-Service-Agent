@@ -1,4 +1,4 @@
-﻿"""Deterministic runtime for the customer-service orchestrator.
+"""Deterministic runtime for the customer-service orchestrator.
 
 The prompt files describe how the orchestrator should behave. This module turns
 that contract into ordinary Python code so the routing, tool use, and response
@@ -8,6 +8,7 @@ composition can be tested without launching a live LLM agent.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -21,6 +22,8 @@ from fastapi import HTTPException
 from kb_service import FaqRetrievalService, get_faq_retriever
 from security import Actor, Verification, run_idempotent
 
+
+LOGGER = logging.getLogger(__name__)
 
 ORDER_ID_RE = re.compile(r"ORD-\d{8}-\d{3}", re.IGNORECASE)
 TRACKING_RE = re.compile(r"\b[A-Z]{2}\d{10,16}\b", re.IGNORECASE)
@@ -343,58 +346,75 @@ class CustomerServiceOrchestrator:
             conversation_id=conversation_id or f"conv-{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
         )
         self.tool_calls = []
+        emotional_level = "L1"
+        intents: list[IntentAnalysis] = []
+        results: list[AgentResult] = []
 
-        if not context.message:
+        try:
+            if not context.message:
+                run = OrchestratorRun(
+                    status="needs-info",
+                    conversation_id=context.conversation_id or "",
+                    customer_reply="您好，我是小客。请告诉我您需要查询或处理的问题，我会马上帮您。",
+                    emotional_level=emotional_level,
+                    intent_analysis=[],
+                    dispatched_agents=[],
+                    agent_results=[],
+                    tool_calls=[],
+                )
+                result = run.to_dict()
+                self._record_usage_event(result, context)
+                return result
+
+            emotional_level = self._classify_emotion(context.message)
+            intents = self.analyze_intents(context, emotional_level)
+
+            for intent in intents:
+                handler = self._handler_for(intent.intent)
+                if handler is None:
+                    continue
+                handler_results = handler(context)
+                if isinstance(handler_results, list):
+                    results.extend(handler_results)
+                else:
+                    results.append(handler_results)
+
+                if intent.intent == "human_handoff":
+                    break
+
+            dispatched_agents = self._unique([result.agent for result in results])
+            customer_reply = self._compose_reply(results)
+            needs_human = any(result.status == "needs-escalation" for result in results)
+            status = self._overall_status(results, needs_human)
+
             run = OrchestratorRun(
-                status="needs-info",
+                status=status,
                 conversation_id=context.conversation_id or "",
-                customer_reply="您好，我是小客。请告诉我您需要查询或处理的问题，我会马上帮您。",
-                emotional_level="L1",
-                intent_analysis=[],
-                dispatched_agents=[],
-                agent_results=[],
-                tool_calls=[],
+                customer_reply=customer_reply,
+                emotional_level=emotional_level,
+                intent_analysis=intents,
+                dispatched_agents=dispatched_agents,
+                agent_results=results,
+                tool_calls=self.tool_calls,
+                needs_human=needs_human,
             )
             result = run.to_dict()
             self._record_usage_event(result, context)
             return result
-
-        emotional_level = self._classify_emotion(context.message)
-        intents = self.analyze_intents(context, emotional_level)
-        results: list[AgentResult] = []
-
-        for intent in intents:
-            handler = self._handler_for(intent.intent)
-            if handler is None:
-                continue
-            handler_results = handler(context)
-            if isinstance(handler_results, list):
-                results.extend(handler_results)
-            else:
-                results.append(handler_results)
-
-            if intent.intent == "human_handoff":
-                break
-
-        dispatched_agents = self._unique([result.agent for result in results])
-        customer_reply = self._compose_reply(results)
-        needs_human = any(result.status == "needs-escalation" for result in results)
-        status = self._overall_status(results, needs_human)
-
-        run = OrchestratorRun(
-            status=status,
-            conversation_id=context.conversation_id or "",
-            customer_reply=customer_reply,
-            emotional_level=emotional_level,
-            intent_analysis=intents,
-            dispatched_agents=dispatched_agents,
-            agent_results=results,
-            tool_calls=self.tool_calls,
-            needs_human=needs_human,
-        )
-        result = run.to_dict()
-        self._record_usage_event(result, context)
-        return result
+        except Exception as exc:
+            run = OrchestratorRun(
+                status="failed",
+                conversation_id=context.conversation_id or "",
+                customer_reply="",
+                emotional_level=emotional_level,
+                intent_analysis=intents,
+                dispatched_agents=self._unique([result.agent for result in results]),
+                agent_results=results,
+                tool_calls=self.tool_calls,
+                needs_human=False,
+            )
+            self._record_usage_event(run.to_dict(), context, failure_reason=str(exc))
+            raise
 
     def analyze_intents(
         self, context: CustomerContext, emotional_level: str
@@ -743,6 +763,7 @@ class CustomerServiceOrchestrator:
                     failure_reason=failure_reason,
                 )
         except Exception:
+            LOGGER.warning("failed to record customer-service usage analytics", exc_info=True)
             # Analytics must never block the customer response path.
             return
 
