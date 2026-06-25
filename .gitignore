@@ -21,3 +21,5 @@ Thumbs.db
 .claude/worktrees/
 # Generated reports
 reports/daily/*.md
+# Local Codex skills
+.agents/skills/*
