@@ -80,3 +80,14 @@ Orchestrator 与子 Agent 之间的标准化消息格式。
 **输入**（Orchestrator → 子 Agent）：`【客户上下文】` + `【任务】` 两个区块，包含客户ID、订单号、消息原文、情绪强度、相关历史。
 
 **输出**（子 Agent → Orchestrator）：`【处理结果】`（success/partial/failed/needs-escalation）+ `【客户回复】`（可直接发给客户的自然语言）+ `【内部备注】`（不给客户看的内部信息）。
+
+## Hardening Domain Terms
+
+### Scoped Verification
+A verified identity token must be scoped to either a customer or a specific order before it can authorize protected customer/order resources. A customer-scoped token may access orders owned by that customer. An order-scoped token may access only that order. An unscoped token is not sufficient for protected resources.
+
+### Business Day
+The reporting day used by daily analytics. It is interpreted in `REPORT_TIMEZONE` and defaults to `Asia/Shanghai`, then converted to a UTC query window for persisted timestamps.
+
+### Usage Event
+A metadata-only record of one orchestrator run. It stores conversation id, status, emotional level, intents, dispatched agents, tool-call summaries, customer/order ids, message length, failure reason, and timestamps. It must not store raw customer messages or full customer replies.

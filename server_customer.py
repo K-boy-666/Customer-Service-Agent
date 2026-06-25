@@ -1,4 +1,4 @@
-"""
+﻿"""
 MCP server for customer-service operations.
 
 Exposes 12 tools across three domains:
@@ -16,10 +16,13 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+import analytics_service
 import api_client
+from kb_service import get_faq_retriever
+from orchestrator_mcp_tool import handle_customer_message_tool
 
 # ---------------------------------------------------------------------------
-# FAQ — loaded once at startup
+# FAQ 鈥?loaded once at startup
 # ---------------------------------------------------------------------------
 
 FAQ_PATH = Path(__file__).parent / "faq.json"
@@ -32,9 +35,10 @@ def _load_faq() -> list[dict]:
 
 
 FAQ = _load_faq()
+FAQ_RETRIEVER = get_faq_retriever(str(FAQ_PATH))
 
 # Pre-compute category list for fast lookup
-FAQ_CATEGORIES = sorted({entry["category"] for entry in FAQ})
+FAQ_CATEGORIES = [row["category"] for row in FAQ_RETRIEVER.categories()]
 
 # ---------------------------------------------------------------------------
 # Server
@@ -44,18 +48,59 @@ mcp = FastMCP(
     name="customer-service",
     version="0.2.0",
     instructions=(
-        "This server provides customer-service operations for the 客服智能体2.0 platform. "
-        "It has three tool groups:\n"
-        "1. Knowledge Base — search_faq, get_faq_categories, get_faq_by_id. "
+        "This server provides customer-service operations for the 瀹㈡湇鏅鸿兘浣?.0 platform. "
+        "It has four tool groups:\n"
+        "1. Orchestrator runtime 鈥?handle_customer_message. Use this as the only "
+        "customer-facing entry point for complete routing and response composition.\n"
+        "2. Knowledge Base 鈥?search_faq, get_faq_categories, get_faq_by_id. "
         "Use these to answer customer questions about policies, products, and procedures.\n"
-        "2. Ticket Management — create_ticket, get_ticket, list_tickets, update_ticket, "
-        "search_tickets. Follow the ITIL ticket lifecycle: new → assigned → in_progress → "
-        "pending → resolved → closed. Priority levels: P1 (critical) through P4 (low).\n"
-        "3. After-Sales / Returns — create_return, get_return, list_returns, "
-        "update_return_status. Return types: return (退货), exchange (换货), refund (退款). "
-        "Return statuses: pending → approved → in_transit → received → refunded → completed."
+        "3. Ticket Management 鈥?create_ticket, get_ticket, list_tickets, update_ticket, "
+        "search_tickets. Follow the ITIL ticket lifecycle: new 鈫?assigned 鈫?in_progress 鈫?"
+        "pending 鈫?resolved 鈫?closed. Priority levels: P1 (critical) through P4 (low).\n"
+        "4. After-Sales / Returns 鈥?create_return, get_return, list_returns, "
+        "update_return_status. Return types: return (閫€璐?, exchange (鎹㈣揣), refund (閫€娆?. "
+        "Return statuses: pending 鈫?approved 鈫?in_transit 鈫?received 鈫?refunded 鈫?completed."
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator runtime tool
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    annotations={
+        "openWorldHint": True,
+        "title": "Handle a customer message through the orchestrator",
+    },
+)
+async def handle_customer_message(
+    message: str,
+    customer_id: int = 0,
+    order_id: str = "",
+    conversation_id: str = "",
+    actor_subject: str = "mcp-orchestrator",
+    actor_role: str = "orchestrator",
+    verification_token: str = "",
+    idempotency_key: str = "",
+) -> str:
+    """Run the sole customer-facing orchestrator for one customer message.
+
+    This is the MCP entry point that enforces ADR-0001 in executable form:
+    callers send raw customer text here, and the runtime performs intent
+    analysis, sub-agent dispatch, tool calls, and response composition.
+    """
+    return handle_customer_message_tool(
+        message=message,
+        customer_id=customer_id,
+        order_id=order_id,
+        conversation_id=conversation_id,
+        actor_subject=actor_subject,
+        actor_role=actor_role,
+        verification_token=verification_token,
+        idempotency_key=idempotency_key,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -71,62 +116,20 @@ mcp = FastMCP(
     },
 )
 async def search_faq(query: str, category: str = "", limit: int = 10) -> str:
-    """Search the FAQ knowledge base by keyword.
+    """Search the FAQ knowledge base with semantic RAG retrieval.
 
-    Matches against question text, answer text, and keyword tags.
-    Use this to answer customer questions about return policy, warranty,
-    shipping, membership, payment, and product specifications.
-
-    Args:
-        query: Search keyword(s) in Chinese or English.
-        category: Optional category filter (e.g., "退货政策", "产品咨询").
-                  Call get_faq_categories first to see available categories.
-        limit: Max results to return (default 10).
+    The retriever uses a local embedding model when available and falls back
+    to an in-process lexical index when optional model dependencies are absent.
     """
-    q = query.lower()
-    results = []
-
-    for entry in FAQ:
-        # Category filter
-        if category and entry["category"] != category:
-            continue
-
-        # Score: match in question > keywords > answer
-        score = 0
-        if q in entry["question"].lower():
-            score += 10
-        for kw in entry.get("keywords", []):
-            if q in kw.lower():
-                score += 5
-        if q in entry["answer"].lower():
-            score += 2
-
-        if score > 0:
-            results.append((score, entry))
-
-    # Sort by score descending, take top N
-    results.sort(key=lambda x: x[0], reverse=True)
-    top = results[:limit]
-
-    if not top:
+    results = FAQ_RETRIEVER.search(query, limit=limit, category=category)
+    if not results:
         all_cats = ", ".join(FAQ_CATEGORIES)
         return (
             f"No FAQ entries found for '{query}'. "
             f"Try different keywords or a broader search. "
             f"Available categories: {all_cats}"
         )
-
-    out = []
-    for score, entry in top:
-        out.append({
-            "id": entry["id"],
-            "category": entry["category"],
-            "question": entry["question"],
-            "answer": entry["answer"],
-            "relevance": score,
-        })
-
-    return json.dumps(out, ensure_ascii=False, indent=2)
+    return json.dumps(results, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -142,16 +145,7 @@ async def get_faq_categories() -> str:
     Use this first to understand what topics the knowledge base covers,
     then use search_faq with a category filter for targeted results.
     """
-    counts = {}
-    for entry in FAQ:
-        cat = entry["category"]
-        counts[cat] = counts.get(cat, 0) + 1
-
-    out = [
-        {"category": cat, "entry_count": counts[cat]}
-        for cat in FAQ_CATEGORIES
-    ]
-    return json.dumps(out, ensure_ascii=False, indent=2)
+    return json.dumps(FAQ_RETRIEVER.categories(), ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -167,9 +161,9 @@ async def get_faq_by_id(faq_id: str) -> str:
     Use this when you already know the FAQ ID from a previous search_faq result,
     or when you need the full details of a specific FAQ entry.
     """
-    for entry in FAQ:
-        if entry["id"] == faq_id:
-            return json.dumps(entry, ensure_ascii=False, indent=2)
+    entry = FAQ_RETRIEVER.get_by_id(faq_id)
+    if entry is not None:
+        return json.dumps(entry, ensure_ascii=False, indent=2)
     return f"FAQ entry '{faq_id}' not found. Use search_faq to find relevant entries."
 
 
@@ -197,9 +191,9 @@ async def create_ticket(
     Args:
         title: Short title for the ticket (required).
         description: Detailed description of the issue or request.
-        type: Ticket type — "incident" (故障/问题), "service_request" (服务请求),
-              "change_request" (变更请求), or "problem" (问题管理).
-        priority: "P1" (紧急), "P2" (高), "P3" (普通), or "P4" (低).
+        type: Ticket type 鈥?"incident" (鏁呴殰/闂), "service_request" (鏈嶅姟璇锋眰),
+              "change_request" (鍙樻洿璇锋眰), or "problem" (闂绠＄悊).
+        priority: "P1" (绱ф€?, "P2" (楂?, "P3" (鏅€?, or "P4" (浣?.
         customer_id: Optional customer ID to associate with this ticket.
         order_id: Optional order ID to associate with this ticket.
 
@@ -254,7 +248,7 @@ async def list_tickets(
     """List tickets with optional status and assignee filtering.
 
     Args:
-        status: Filter by status — "new", "assigned", "in_progress",
+        status: Filter by status 鈥?"new", "assigned", "in_progress",
                 "pending", "resolved", or "closed". Empty means all.
         assignee: Filter by assignee name (partial match not supported).
         limit: Max results per page (default 20).
@@ -291,10 +285,10 @@ async def update_ticket(
 
     Args:
         ticket_id: The numeric ticket ID.
-        status: New status — "new", "assigned", "in_progress", "pending",
+        status: New status 鈥?"new", "assigned", "in_progress", "pending",
                 "resolved", or "closed".
         assignee: Reassign to a specific person.
-        priority: New priority — "P1", "P2", "P3", or "P4".
+        priority: New priority 鈥?"P1", "P2", "P3", or "P4".
         note: Optional note to add to the ticket (e.g., status change reason).
 
     Returns the update confirmation.
@@ -359,8 +353,8 @@ async def create_return(
 
     Args:
         order_id: The order ID (e.g., "ORD-20260601-001"). Required.
-        reason: The reason for the return (e.g., "商品质量问题", "不想要了").
-        type: "return" (退货), "exchange" (换货), or "refund" (仅退款).
+        reason: The reason for the return (e.g., "鍟嗗搧璐ㄩ噺闂", "涓嶆兂瑕佷簡").
+        type: "return" (閫€璐?, "exchange" (鎹㈣揣), or "refund" (浠呴€€娆?.
               Default is "return".
         description: Detailed description of the issue.
         customer_id: Optional customer ID.
@@ -414,7 +408,7 @@ async def list_returns(
     """List return requests with optional filtering.
 
     Args:
-        status: Filter by status — "pending", "approved", "rejected",
+        status: Filter by status 鈥?"pending", "approved", "rejected",
                 "in_transit", "received", "refunded", or "completed".
                 Empty means all.
         customer_id: Filter by customer ID.
@@ -450,7 +444,7 @@ async def update_return_status(
 
     Args:
         return_id: The numeric return ID.
-        status: New status — "pending", "approved", "rejected", "in_transit",
+        status: New status 鈥?"pending", "approved", "rejected", "in_transit",
                 "received", "refunded", or "completed".
         note: Optional note explaining the status change.
 
@@ -506,6 +500,39 @@ async def submit_satisfaction(
 
 
 # ---------------------------------------------------------------------------
+# Analytics tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    annotations={
+        "readOnlyHint": True,
+        "openWorldHint": True,
+        "title": "Get daily customer-service usage analytics",
+    },
+)
+async def get_usage_analytics(date: str = "yesterday") -> str:
+    """Return aggregate usage analytics for a report date.
+
+    This internal-only tool exposes metadata counts and quality signals. It does
+    not include raw customer messages, full customer replies, or PII.
+    """
+    data = await api_client.get_usage_analytics(date)
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+@mcp.tool(
+    annotations={
+        "openWorldHint": True,
+        "title": "Generate a local Markdown daily usage report",
+    },
+)
+async def generate_daily_usage_report(date: str = "yesterday", output_dir: str = "reports/daily") -> str:
+    """Generate a local Markdown analytics report for a report date."""
+    data = await api_client.get_usage_analytics(date)
+    path = analytics_service.write_markdown_report(data, output_dir)
+    return json.dumps({"date": data["date"], "report_path": str(path)}, ensure_ascii=False, indent=2)
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -517,3 +544,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -5,10 +5,24 @@ Run standalone:  uv run seed_data.py
 Also called automatically on first API startup when the database is empty.
 """
 
-import sqlite3
 from datetime import datetime, timedelta
 
 import database
+from models import (
+    AuditEvent,
+    Customer,
+    IdempotencyKey,
+    Order,
+    OrderItem,
+    OtpChallenge,
+    Product,
+    ReturnRequest,
+    SatisfactionSurvey,
+    Shipment,
+    ShipmentEvent,
+    Ticket,
+    TicketNote,
+)
 
 TODAY = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
 
@@ -337,185 +351,181 @@ SURVEY_SEEDS = [
 ]
 
 
-def seed(conn: sqlite3.Connection) -> None:
-    """Clear all tables and insert seed data. Wrapped in a single transaction."""
+def seed(session) -> None:
+    """Clear all tables and insert seed data through SQLAlchemy ORM."""
 
-    # Clear in reverse dependency order
-    conn.execute("DELETE FROM ticket_notes")
-    conn.execute("DELETE FROM tickets")
-    conn.execute("DELETE FROM returns")
-    conn.execute("DELETE FROM satisfaction_surveys")
-    conn.execute("DELETE FROM shipment_events")
-    conn.execute("DELETE FROM shipments")
-    conn.execute("DELETE FROM order_items")
-    conn.execute("DELETE FROM orders")
-    conn.execute("DELETE FROM products")
-    conn.execute("DELETE FROM customers")
+    for model in [
+        AuditEvent,
+        IdempotencyKey,
+        OtpChallenge,
+        TicketNote,
+        Ticket,
+        ReturnRequest,
+        SatisfactionSurvey,
+        ShipmentEvent,
+        Shipment,
+        OrderItem,
+        Order,
+        Product,
+        Customer,
+    ]:
+        session.query(model).delete()
 
-    # --- Customers ---
-    conn.executemany(
-        """INSERT INTO customers (id, name, email, phone, membership_tier, points, joined_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        CUSTOMERS,
-    )
+    for row in CUSTOMERS:
+        session.add(
+            Customer(
+                id=row[0],
+                name=row[1],
+                email=row[2],
+                phone=row[3],
+                membership_tier=row[4],
+                points=row[5],
+                joined_at=row[6],
+            )
+        )
 
-    # --- Products ---
-    conn.executemany(
-        """INSERT INTO products (sku, name, category, unit_price) VALUES (?, ?, ?, ?)""",
-        PRODUCTS,
-    )
+    for sku, name, category, unit_price in PRODUCTS:
+        session.add(Product(sku=sku, name=name, category=category, unit_price=unit_price))
+    session.flush()
 
-    # --- Orders + Items ---
-    # Track sequential IDs per day
     day_counters: dict[int, int] = {}
+    addr_map = {
+        0: "北京市朝阳区建国路88号",
+        1: "上海市浦东新区世纪大道100号",
+        2: "广州市天河区天河路385号",
+        3: "深圳市南山区科技园南路",
+        4: "杭州市西湖区文三路478号",
+        5: "成都市武侯区人民南路四段",
+        6: "武汉市洪山区珞喻路1037号",
+        7: "南京市鼓楼区中山北路200号",
+        8: "西安市雁塔区科技路18号",
+        9: "重庆市渝中区解放碑步行街",
+    }
 
-    for idx, (cust_idx, day_off, status, items) in enumerate(ORDER_SPECS):
+    for _idx, (cust_idx, day_off, order_status, items) in enumerate(ORDER_SPECS):
         seq = day_counters.get(day_off, 0) + 1
         day_counters[day_off] = seq
-
         order_id = _order_id(day_off, seq)
-        order_no = _order_number(day_off, seq)
-        cust_id = CUSTOMERS[cust_idx][0]
-        created = _order_date(day_off)
-        updated = _order_date(day_off) if status == "pending" else _fmt_date(max(0, day_off - 1))
-
-        total = sum(
-            next(p[3] for p in PRODUCTS if p[0] == sku) * qty for sku, qty in items
+        total = sum(next(p[3] for p in PRODUCTS if p[0] == sku) * qty for sku, qty in items)
+        session.add(
+            Order(
+                id=order_id,
+                order_number=_order_number(day_off, seq),
+                customer_id=CUSTOMERS[cust_idx][0],
+                status=order_status,
+                total_amount=round(total, 2),
+                currency="CNY",
+                shipping_address=addr_map.get(cust_idx, addr_map[0]),
+                created_at=_order_date(day_off),
+                updated_at=_order_date(day_off) if order_status == "pending" else _fmt_date(max(0, day_off - 1)),
+            )
         )
-
-        addr_map = {
-            0: "北京市朝阳区建国路88号",
-            1: "上海市浦东新区世纪大道100号",
-            2: "广州市天河区天河路385号",
-            3: "深圳市南山区科技园南路",
-            4: "杭州市西湖区文三路478号",
-            5: "成都市武侯区人民南路四段",
-            6: "武汉市洪山区珞喻路1037号",
-            7: "南京市鼓楼区中山北路200号",
-            8: "西安市雁塔区科技路18号",
-            9: "重庆市渝中区解放碑步行街",
-        }
-        addr = addr_map.get(cust_idx, addr_map[0])
-
-        conn.execute(
-            """INSERT INTO orders (id, order_number, customer_id, status, total_amount,
-               currency, shipping_address, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 'CNY', ?, ?, ?)""",
-            (order_id, order_no, cust_id, status, round(total, 2), addr, created, updated),
-        )
-
         for sku, qty in items:
             prod = next(p for p in PRODUCTS if p[0] == sku)
-            conn.execute(
-                """INSERT INTO order_items (order_id, sku, name, qty, price)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (order_id, sku, prod[1], qty, prod[3]),
-            )
+            session.add(OrderItem(order_id=order_id, sku=sku, name=prod[1], qty=qty, price=prod[3]))
+    session.flush()
 
-    # --- Shipments + Events ---
-    shipment_idx = 0
-    for idx, (cust_idx, day_off, status, _items) in enumerate(ORDER_SPECS):
-        if status not in ("shipped", "delivered"):
+    for idx, (_cust_idx, day_off, order_status, _items) in enumerate(ORDER_SPECS):
+        if order_status not in ("shipped", "delivered"):
             continue
-
-        shipment_idx += 1
-        day_counters_local = day_counters.copy()  # not needed, just use idx
-        seq = list(day_counters.values())[idx % len(day_counters)] if day_counters else 1
-        # Recalculate order_id properly:
-        # Find the seq for this day_off
-        # We need to map back — simpler: recalculate
-        _seq = sum(1 for j in range(idx + 1) if ORDER_SPECS[j][1] == day_off)
-        order_id = _order_id(day_off, _seq)
-
+        seq = sum(1 for j in range(idx + 1) if ORDER_SPECS[j][1] == day_off)
+        order_id = _order_id(day_off, seq)
         carrier = CARRIERS[idx % len(CARRIERS)]
         code = CARRIER_CODES[idx % len(CARRIER_CODES)]
-        tracking = f"{code}{1234567890000 + idx:0>13}"
-
-        ship_status = "in_transit" if status == "shipped" else "delivered"
-        est_delivery = _fmt_date(-2) if status == "shipped" else _fmt_date(-1)
-
-        conn.execute(
-            """INSERT INTO shipments (order_id, carrier, tracking_number, status,
-               estimated_delivery) VALUES (?, ?, ?, ?, ?)""",
-            (order_id, carrier, tracking, ship_status, est_delivery),
+        ship_status = "in_transit" if order_status == "shipped" else "delivered"
+        shipment = Shipment(
+            order_id=order_id,
+            carrier=carrier,
+            tracking_number=f"{code}{1234567890000 + idx:0>13}",
+            status=ship_status,
+            estimated_delivery=_fmt_date(-2) if order_status == "shipped" else _fmt_date(-1),
         )
-        ship_db_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-        events = _build_shipment_events(status, ship_status, idx)
-        for evt in events:
-            conn.execute(
-                """INSERT INTO shipment_events (shipment_id, status, location,
-                   description, event_time) VALUES (?, ?, ?, ?, ?)""",
-                (ship_db_id, evt["status"], evt["location"],
-                 evt["description"], evt["event_time"]),
+        session.add(shipment)
+        session.flush()
+        for evt in _build_shipment_events(order_status, ship_status, idx):
+            session.add(
+                ShipmentEvent(
+                    shipment_id=shipment.id,
+                    status=evt["status"],
+                    location=evt["location"],
+                    description=evt["description"],
+                    event_time=evt["event_time"],
+                )
             )
 
-    # --- Tickets ---
     today_str = TODAY.strftime("%Y%m%d")
     for i, t in enumerate(TICKET_SEEDS):
-        ticket_number = f"TK-{today_str}-{i + 1:03d}"
-        conn.execute(
-            """INSERT INTO tickets (ticket_number, title, type, priority, status,
-               description, customer_id, order_id, assignee, department, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))""",
-            (ticket_number, *t),
+        title, ticket_type, priority, ticket_status, description, customer_id, order_id, assignee, department = t
+        ticket = Ticket(
+            ticket_number=f"TK-{today_str}-{i + 1:03d}",
+            title=title,
+            type=ticket_type,
+            priority=priority,
+            status=ticket_status,
+            description=description,
+            customer_id=customer_id,
+            order_id=order_id,
+            assignee=assignee,
+            department=department,
+        )
+        session.add(ticket)
+        session.flush()
+        session.add(TicketNote(ticket_id=ticket.id, content="工单已创建，等待处理。", author="system"))
+
+    for order_spec_idx, ret_type, reason, description, return_status in RETURN_SPECS:
+        cust_idx, day_off, _order_status, _items = ORDER_SPECS[order_spec_idx]
+        seq = sum(1 for j in range(order_spec_idx + 1) if ORDER_SPECS[j][1] == day_off)
+        session.add(
+            ReturnRequest(
+                return_number=f"RMA-{TODAY.strftime('%Y%m%d')}-{order_spec_idx + 1:03d}",
+                order_id=_order_id(day_off, seq),
+                customer_id=CUSTOMERS[cust_idx][0],
+                type=ret_type,
+                reason=reason,
+                description=description,
+                status=return_status,
+            )
         )
 
-        ticket_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        # Add an initial note for each ticket
-        conn.execute(
-            """INSERT INTO ticket_notes (ticket_id, content, author, created_at)
-               VALUES (?, '工单已创建，等待处理。', 'system', datetime('now','localtime'))""",
-            (ticket_id,),
-        )
-
-    # --- Returns ---
-    for order_spec_idx, ret_type, reason, description, status in RETURN_SPECS:
-        cust_idx, day_off, order_status, _items = ORDER_SPECS[order_spec_idx]
-        cust_id = CUSTOMERS[cust_idx][0]
-
-        # Recalculate order_id
-        _seq = sum(1 for j in range(order_spec_idx + 1) if ORDER_SPECS[j][1] == day_off)
-        order_id = _order_id(day_off, _seq)
-
-        return_number = f"RMA-{TODAY.strftime('%Y%m%d')}-{order_spec_idx + 1:03d}"
-        conn.execute(
-            """INSERT INTO returns (return_number, order_id, customer_id, type, reason,
-               description, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime'))""",
-            (return_number, order_id, cust_id, ret_type, reason, description, status),
-        )
-
-    # --- Satisfaction Surveys ---
-    today_str = TODAY.strftime("%Y%m%d")
     for i, (cust_id, order_id, rating, feedback) in enumerate(SURVEY_SEEDS):
-        survey_number = f"SAT-{today_str}-{i + 1:03d}"
-        conn.execute(
-            """INSERT INTO satisfaction_surveys (survey_number, customer_id, order_id, rating, feedback_text, created_at)
-               VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))""",
-            (survey_number, cust_id, order_id, rating, feedback),
+        session.add(
+            SatisfactionSurvey(
+                survey_number=f"SAT-{today_str}-{i + 1:03d}",
+                customer_id=cust_id,
+                order_id=order_id,
+                rating=rating,
+                feedback_text=feedback,
+            )
         )
 
-    conn.commit()
+    session.commit()
 
 
 def main() -> None:
     """Entry point: initialize DB and seed data."""
     database.init_db()
-    conn = database.get_db()
+    session = database.get_session()
     try:
-        seed(conn)
-        # Verify
+        seed(session)
         counts = {}
-        for table in ["customers","products","orders","order_items","shipments",
-                       "shipment_events","tickets","ticket_notes","returns","satisfaction_surveys"]:
-            row = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
-            counts[table] = row["n"]
+        for model, table in [
+            (Customer, "customers"),
+            (Product, "products"),
+            (Order, "orders"),
+            (OrderItem, "order_items"),
+            (Shipment, "shipments"),
+            (ShipmentEvent, "shipment_events"),
+            (Ticket, "tickets"),
+            (TicketNote, "ticket_notes"),
+            (ReturnRequest, "returns"),
+            (SatisfactionSurvey, "satisfaction_surveys"),
+        ]:
+            counts[table] = session.query(model).count()
         print("Seed complete:")
-        for t, n in counts.items():
-            print(f"  {t}: {n}")
+        for table, count in counts.items():
+            print(f"  {table}: {count}")
     finally:
-        conn.close()
+        session.close()
 
 
 if __name__ == "__main__":
