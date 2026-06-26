@@ -2,21 +2,25 @@
   "mcpServers": {
     "customer-service": {
       "command": "python",
-      "args": ["src/server_customer.py"],
+      "args": [
+        "src/server_customer.py"
+      ],
       "cwd": "${projectDir}",
       "env": {
-        "API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjdXN0b21lci1zZXJ2aWNlLWRldiIsImF1ZCI6ImN1c3RvbWVyLXNlcnZpY2UtYXBpIiwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6Im9yY2hlc3RyYXRvciIsImlhdCI6MTc4MjIzOTI1OCwiZXhwIjoxNzgyMjQyODU4fQ.4e2bKjw5b5ukxNRP7YSaRMvQd_VGFifoMrGyhGJrnIw",
+        "API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjdXN0b21lci1zZXJ2aWNlLWRldiIsImF1ZCI6ImN1c3RvbWVyLXNlcnZpY2UtYXBpIiwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6Im9yY2hlc3RyYXRvciIsImlhdCI6MTc4MjQ2NTYzOSwiZXhwIjoxNzg1MDU3NjM5fQ.35J2Fuk8pfsTG4obkO5OhsHLo8ilQL_GCsbzO_Odq3o",
         "OTP_PROVIDER": "dev",
         "AUTH_DEV_SECRET": "dev-secret"
       }
     },
     "order-server": {
       "command": "python",
-      "args": ["src/server.py"],
+      "args": [
+        "src/server.py"
+      ],
       "cwd": "${projectDir}",
       "env": {
-        "API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjdXN0b21lci1zZXJ2aWNlLWRldiIsImF1ZCI6ImN1c3RvbWVyLXNlcnZpY2UtYXBpIiwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6Im9yZGVyX2lucXVpcnkiLCJpYXQiOjE3ODIyMzkyNTgsImV4cCI6MTc4MjI0Mjg1OH0.973YMtHJ1y0y7PCQcleBBaJ6ZLpiD4TCSTE36VtLDPk",
-        "IDENTITY_VERIFICATION": "",
+        "API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjdXN0b21lci1zZXJ2aWNlLWRldiIsImF1ZCI6ImN1c3RvbWVyLXNlcnZpY2UtYXBpIiwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6Im9yZGVyX2lucXVpcnkiLCJpYXQiOjE3ODI0NjU2MzksImV4cCI6MTc4NTA1NzYzOX0.RUYkd23ZWAlx5XOyz2FwqTgxRkxl4w1sJEHKyri43lc",
+        "IDENTITY_VERIFICATION": "yoV-Qo-yRFjW9X_aYYtXTe4BWr75lr9xRsCwL3kAStk",
         "OTP_PROVIDER": "dev",
         "AUTH_DEV_SECRET": "dev-secret"
       }
