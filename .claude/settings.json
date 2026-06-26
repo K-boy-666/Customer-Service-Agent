@@ -7,9 +7,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.command' | { read -r cmd; if echo \"$cmd\" | grep -qiE 'rm\\s+-rf|>\\s*/dev/sd|mkfs\\.|dd\\s+if=|:()\\s*\\{.*:|fork\\s+bomb|git\\s+push\\s+.*(-f|--force)|git\\s+reset\\s+--hard|git\\s+clean\\s+-[fdx]|chmod\\s+777|chown\\s+-R|curl.*\\|\\s*(ba)?sh|wget.*\\|\\s*(ba)?sh'; then echo '{\"systemMessage\":\"🚫 危险命令已拦截\",\"continue\":false,\"stopReason\":\"命令包含潜在危险操作，已阻止执行。\"}'; fi; }",
+            "command": "jq -r '.tool_input.command' | { read -r cmd; if echo \"$cmd\" | grep -qiE 'rm\\s+-rf|>\\s*/dev/sd|mkfs\\.|dd\\s+if=|:()\\s*\\{.*:|fork\\s+bomb|git\\s+push\\s+.*(-f|--force)|git\\s+reset\\s+--hard|git\\s+clean\\s+-[fdx]|chmod\\s+777|chown\\s+-R|curl.*\\|\\s*(ba)?sh|wget.*\\|\\s*(ba)?sh'; then echo '{\"systemMessage\":\"Dangerous command blocked\",\"continue\":false,\"stopReason\":\"The command contains a potentially destructive operation.\"}'; fi; }",
             "timeout": 10,
-            "statusMessage": "🔍 检查命令安全性..."
+            "statusMessage": "Checking command safety..."
           }
         ]
       },
@@ -18,9 +18,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path' | { read -r fp; case \"$fp\" in /etc/*|/boot/*|/sys/*|/proc/*|/Windows/*|\"$HOME\"/.ssh/*|\"$HOME\"/.gnupg/*) echo '{\"systemMessage\":\"⚠️ 正在写入敏感路径\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"目标路径为系统敏感目录\"}}';; esac; }",
+            "command": "jq -r '.tool_input.file_path' | { read -r fp; case \"$fp\" in /etc/*|/boot/*|/sys/*|/proc/*|/Windows/*|\"$HOME\"/.ssh/*|\"$HOME\"/.gnupg/*) echo '{\"systemMessage\":\"Sensitive path write requested\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Target path is system-sensitive.\"}}';; esac; }",
             "timeout": 10,
-            "statusMessage": "🔍 检查文件路径..."
+            "statusMessage": "Checking file path safety..."
           }
         ]
       },
@@ -29,9 +29,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.url' | { read -r url; if echo \"$url\" | grep -qiE 'localhost|127\\.0\\.0\\.1|192\\.168\\.|10\\.\\d+|172\\.(1[6-9]|2[0-9]|3[01])\\.'; then echo '{\"systemMessage\":\"🚫 阻止内部网络请求\",\"continue\":false,\"stopReason\":\"检测到访问内部地址，已阻止\"}'; fi; }",
+            "command": "jq -r '.tool_input.url' | { read -r url; if echo \"$url\" | grep -qiE 'localhost|127\\.0\\.0\\.1|192\\.168\\.|10\\.\\d+|172\\.(1[6-9]|2[0-9]|3[01])\\.'; then echo '{\"systemMessage\":\"Internal network request blocked\",\"continue\":false,\"stopReason\":\"The URL points to an internal address.\"}'; fi; }",
             "timeout": 10,
-            "statusMessage": "🔍 检查外部请求安全性..."
+            "statusMessage": "Checking external request safety..."
           }
         ]
       }
@@ -42,9 +42,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r fp; if echo \"$fp\" | grep -qiE '\\.env$|\\.env\\.|credential|secret|private.*key|id_rsa|id_ed25519|\\.pem$|\\.key$|token'; then echo '{\"systemMessage\":\"⚠️ 已写入敏感文件: 请勿将密钥/凭证提交到版本控制\"}'; fi; }",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r fp; if echo \"$fp\" | grep -qiE '\\.env$|\\.env\\.|credential|secret|private.*key|id_rsa|id_ed25519|\\.pem$|\\.key$|token'; then echo '{\"systemMessage\":\"Sensitive file was written; do not commit real credentials.\"}'; fi; }",
             "timeout": 10,
-            "statusMessage": "🔍 检查敏感文件写入..."
+            "statusMessage": "Checking sensitive file writes..."
           }
         ]
       }
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.prompt' | { read -r prompt; if echo \"$prompt\" | grep -qiE '(api[_-]?key|secret[_-]?key|access[_-]?token|private[_-]?key|password)[=: ]+[a-zA-Z0-9_\\-]{16,}'; then echo '{\"systemMessage\":\"⚠️ 您的消息可能包含凭据信息，请勿在对话中分享密钥！\"}'; fi; }",
+            "command": "jq -r '.prompt' | { read -r prompt; if echo \"$prompt\" | grep -qiE '(api[_-]?key|secret[_-]?key|access[_-]?token|private[_-]?key|password)[=: ]+[a-zA-Z0-9_\\-]{16,}'; then echo '{\"systemMessage\":\"Your message may contain credentials; avoid sharing secrets in chat.\"}'; fi; }",
             "timeout": 10
           }
         ]

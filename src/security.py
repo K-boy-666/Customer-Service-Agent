@@ -76,7 +76,7 @@ def decode_jwt_token(token: str) -> Actor:
             key = jwt.PyJWKClient(jwks_url).get_signing_key_from_jwt(token).key
             claims = jwt.decode(token, key=key, algorithms=algorithms, audience=audience, issuer=issuer)
         else:
-            secret = os.getenv("AUTH_DEV_SECRET", "dev-secret")
+            secret = os.getenv("AUTH_DEV_SECRET", "customer-service-dev-secret-min-32-bytes")
             claims = jwt.decode(token, key=secret, algorithms=["HS256"], audience=audience, issuer=issuer)
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"invalid_token: {exc}") from exc
@@ -100,7 +100,7 @@ def create_dev_jwt(subject: str, role: str, expires_minutes: int = 60) -> str:
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=expires_minutes)).timestamp()),
     }
-    return jwt.encode(payload, os.getenv("AUTH_DEV_SECRET", "dev-secret"), algorithm="HS256")
+    return jwt.encode(payload, os.getenv("AUTH_DEV_SECRET", "customer-service-dev-secret-min-32-bytes"), algorithm="HS256")
 
 
 def utcnow() -> datetime:
@@ -355,5 +355,3 @@ async def actor_dependency(authorization: str | None = Header(None, alias="Autho
 
 async def request_id_dependency(request: Request) -> str:
     return request.headers.get("X-Request-ID", "")
-
-

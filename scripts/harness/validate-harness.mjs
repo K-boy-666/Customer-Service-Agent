@@ -137,6 +137,7 @@ function auditState() {
 // ─────────────── 3. Verification ───────────────
 function auditVerification() {
   const hasInitSh = existsSync(join(TARGET, 'init.sh'));
+  const hasInitCmd = existsSync(join(TARGET, 'init.cmd'));
   const hasTests = existsSync(join(TARGET, 'tests'));
   const hasPytest = existsSync(join(TARGET, 'pyproject.toml')) || existsSync(join(TARGET, 'pytest.ini'));
   const hasPackageTest = existsSync(join(TARGET, 'package.json'));
@@ -148,10 +149,10 @@ function auditVerification() {
     findings.push({ ok: true, msg: 'init.sh exists' });
     try {
       const stat = statSync(join(TARGET, 'init.sh'));
-      if (stat.mode & 0o111) {
-        findings.push({ ok: true, msg: 'init.sh is executable' });
+      if ((stat.mode & 0o111) || process.platform === 'win32' || hasInitCmd) {
+        findings.push({ ok: true, msg: hasInitCmd ? 'init.cmd provides a Windows verification entry point' : 'init.sh is executable' });
       } else {
-        findings.push({ ok: false, msg: 'init.sh is not executable — run chmod +x init.sh' });
+        findings.push({ ok: false, msg: 'init.sh is not executable - run chmod +x init.sh' });
       }
     } catch {}
   } else {

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from datetime import datetime
 
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
@@ -25,7 +25,7 @@ class DailyAnalyticsTest(unittest.TestCase):
         fd, self.db_path = tempfile.mkstemp(prefix="customer-analytics-", suffix=".db")
         os.close(fd)
         os.environ["DATABASE_URL"] = "sqlite+pysqlite:///" + self.db_path.replace("\\", "/")
-        os.environ["AUTH_DEV_SECRET"] = "test-secret"
+        os.environ["AUTH_DEV_SECRET"] = "customer-service-test-secret-min-32-bytes"
         os.environ["REPORT_TIMEZONE"] = "Asia/Shanghai"
         database.reset_engine_for_tests()
         database.init_db()

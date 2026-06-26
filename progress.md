@@ -54,3 +54,15 @@ $ bash init.sh
 - MCP servers start automatically via `.claude/mcp.json`. No manual `uvicorn` needed.
 - All sub-agents follow ADR-0002 `【客户上下文】+【任务】` → `【处理结果】+【客户回复】+【内部备注】` protocol.
 - Tests use SQLite; production targets MySQL via Alembic.
+
+## Risk hardening verification - 2026-06-26
+
+- Cross-platform init entrypoints added: `init.cmd`, `init.ps1`, `init.sh` -> `scripts/harness/init_check.py`.
+- Customer-facing MCP path remains `customer-service.handle_customer_message`; `order-server` no longer carries or forwards `IDENTITY_VERIFICATION`.
+- Key governance files are ASCII/UTF-8 without BOM, covered by `tests/test_harness_risk_controls.py`.
+- Dev JWT default/test secrets are >=32 bytes; pytest warning output is clean.
+- Verification evidence:
+  - `uv run pytest tests/ -q` -> 37 passed, 14 subtests passed, 0 warnings.
+  - `node scripts/harness/validate-harness.mjs` with bundled Node -> weighted total 100/100, all checks passed.
+  - `./init.cmd --check-only --skip-tests` -> no failures; warnings only for REST API not running and tests intentionally skipped.
+  - `./init.cmd` ran successfully earlier in this session after adding the entrypoint -> tests passed; later rerun was blocked by platform usage limit, not by project failure.

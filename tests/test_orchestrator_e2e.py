@@ -25,7 +25,7 @@ class OrchestratorE2ETest(unittest.TestCase):
         fd, self.db_path = tempfile.mkstemp(prefix="customer-agent-", suffix=".db")
         os.close(fd)
         os.environ["DATABASE_URL"] = "sqlite+pysqlite:///" + self.db_path.replace("\\", "/")
-        os.environ["AUTH_DEV_SECRET"] = "test-secret"
+        os.environ["AUTH_DEV_SECRET"] = "customer-service-test-secret-min-32-bytes"
         database.reset_engine_for_tests()
         database.init_db()
         session = database.get_session()
@@ -120,7 +120,7 @@ class OrchestratorE2ETest(unittest.TestCase):
             session.close()
 
     def test_api_endpoint_creates_after_sales_refund_request(self):
-        from fastapi.testclient import TestClient
+        from starlette.testclient import TestClient
         import order_api
 
         order_id, customer_id, verification_token = self._first_order("delivered")

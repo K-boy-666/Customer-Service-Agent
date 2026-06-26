@@ -6,6 +6,11 @@ Run with: python server.py   (stdio transport, for Claude Desktop / Claude Code)
 """
 
 import json
+import os
+
+# The order-server is internal read-only support. It must never forward scoped
+# customer verification tokens; protected customer flows go through the orchestrator.
+os.environ.pop("IDENTITY_VERIFICATION", None)
 
 from fastmcp import FastMCP
 

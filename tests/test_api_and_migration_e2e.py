@@ -9,7 +9,7 @@ import unittest
 
 from alembic import command
 from alembic.config import Config
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
@@ -24,7 +24,7 @@ class ApiAndMigrationE2ETest(unittest.TestCase):
         fd, self.db_path = tempfile.mkstemp(prefix="customer-api-", suffix=".db")
         os.close(fd)
         os.environ["DATABASE_URL"] = "sqlite+pysqlite:///" + self.db_path.replace("\\", "/")
-        os.environ["AUTH_DEV_SECRET"] = "test-secret"
+        os.environ["AUTH_DEV_SECRET"] = "customer-service-test-secret-min-32-bytes"
         database.reset_engine_for_tests()
         database.init_db()
         session = database.get_session()

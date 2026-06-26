@@ -124,3 +124,72 @@
 
 **Open risks / follow-ups**:
 - 
+
+---
+
+## Session: 2026-06-26 (architecture analysis)
+
+**Branch**: `main`
+**Active feature**: None - architecture review only.
+**Outcome**: Completed.
+
+**What was done**:
+- Reviewed AGENTS.md/session requirements, progress.md, feature_list.json, ADRs, MCP config, agent prompts inventory, and core `src/` modules.
+- Analyzed the runtime architecture across orchestrator, MCP tools, REST API, service layer, security, persistence, FAQ retrieval, and analytics.
+- Verified the test suite with elevated `uv run pytest tests/ -q`: 32 passed, 14 subtests passed.
+- Attempted required `bash init.sh --check-only`, but this Windows environment has no `bash` executable in PATH or common Git Bash install paths.
+
+**Files touched this session**:
+- `session-handoff.md` - added this session block only.
+
+**State snapshot**:
+- All planned features remain marked done in `feature_list.json`.
+- `progress.md` reports no active blockers and planned next work: P1 production deployment hardening, P2 load testing.
+- Test health: passing, with warnings for Starlette TestClient deprecation and short dev HMAC secret length.
+
+**Key decisions made**:
+- No code changes were made; this was analysis-only.
+- Used `codebase-design` vocabulary to frame module interfaces, seams, adapters, leverage, and locality.
+
+**Open risks / follow-ups**:
+- `init.sh --check-only` still cannot run until Bash is available on the host.
+- Existing Chinese text renders as mojibake in PowerShell output, suggesting terminal/codepage display issues even though file paths and execution work.
+
+---
+
+## Session: 2026-06-26 (risk hardening)
+
+**Branch**: `main`
+**Active feature**: Risk hardening after architecture review.
+**Outcome**: Completed.
+
+**What was done**:
+- Added cross-platform init implementation: `scripts/harness/init_check.py`, plus `init.cmd`, `init.ps1`, and a simplified `init.sh` wrapper.
+- Rewrote key governance docs (`AGENTS.md`, `CLAUDE.md`) as readable ASCII instructions with Windows/POSIX startup paths.
+- Removed `IDENTITY_VERIFICATION` from `order-server` MCP config and made `src/server.py` scrub that env var at startup.
+- Replaced short dev/test HMAC secrets with >=32-byte values and regenerated MCP dev JWTs.
+- Added risk regression tests in `tests/test_harness_risk_controls.py`.
+- Cleaned pytest warning output with a precise Starlette TestClient deprecation filter.
+- Added `.gitattributes` and adjusted `validate-harness.mjs` to accept the Windows `init.cmd` verification entry point.
+
+**Files touched this session**:
+- `.gitattributes`, `.claude/mcp.json`, `.claude/settings.json`, `AGENTS.md`, `CLAUDE.md`, `init.cmd`, `init.ps1`, `init.sh`
+- `scripts/harness/init_check.py`, `scripts/harness/validate-harness.mjs`
+- `src/security.py`, `src/server.py`
+- `tests/test_harness_risk_controls.py`, plus targeted test imports/secrets in FastAPI/security tests
+- `pyproject.toml`, `progress.md`, `session-handoff.md`
+
+**State snapshot**:
+- `uv run pytest tests/ -q`: 37 passed, 14 subtests passed, 0 warnings.
+- Harness audit with bundled Node: 100/100, all checks passed.
+- `./init.cmd --check-only --skip-tests`: no failures; warnings only for REST API not running and skipped tests.
+- Full `./init.cmd` ran successfully once after adding the entrypoint; a later rerun was blocked by platform usage limits, not project failure.
+
+**Key decisions made**:
+- Treat `customer-service` MCP `handle_customer_message` as the only customer-facing MCP path.
+- Keep `order-server` read-only and unable to forward scoped customer verification tokens.
+- Prefer ASCII/no-BOM governance and harness files to avoid Windows terminal/codepage corruption.
+
+**Open risks / follow-ups**:
+- REST API was not running during check-only validation; start `uvicorn order_api:app --reload --port 8000` when live API probes are required.
+- Broader product prompt/FAQ Chinese text still contains mojibake in parts of the repository; this session fixed governance/runtime-risk surfaces only.
