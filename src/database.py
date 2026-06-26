@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from models import Base
 
 
-DEFAULT_SQLITE_URL = "sqlite+pysqlite:///orders.db"
+DEFAULT_SQLITE_URL = "sqlite+pysqlite:///data/orders.db"
 
 
 def _legacy_sqlite_url() -> str:

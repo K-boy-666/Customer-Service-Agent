@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import database
 import seed_data
@@ -106,7 +106,7 @@ class SmokeTest(unittest.TestCase):
     def test_seeded_knowledge_base_still_available(self):
         import json
 
-        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "faq.json"), encoding="utf-8") as f:
+        with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "faq.json"), encoding="utf-8") as f:
             faq = json.load(f)
         self.assertGreaterEqual(len(faq), 50)
         self.assertIn("退货政策", {entry["category"] for entry in faq})

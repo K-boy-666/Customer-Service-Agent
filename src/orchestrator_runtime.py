@@ -142,7 +142,7 @@ class LocalCustomerServiceTools:
         idempotency_key: str = "",
         request_id: str = "",
     ):
-        self.faq_path = Path(faq_path or Path(__file__).parent / "faq.json")
+        self.faq_path = Path(faq_path or Path(__file__).parent.parent / "data" / "faq.json")
         self._faq: list[dict[str, Any]] | None = None
         self._faq_retriever = faq_retriever or get_faq_retriever(str(self.faq_path))
         self.root_actor = root_actor or Actor("orchestrator-runtime", "orchestrator", {})

@@ -2,12 +2,12 @@
   "mcpServers": {
     "customer-service": {
       "command": "python",
-      "args": ["server_customer.py"],
+      "args": ["src/server_customer.py"],
       "cwd": "${projectDir}"
     },
     "order-server": {
       "command": "python",
-      "args": ["server.py"],
+      "args": ["src/server.py"],
       "cwd": "${projectDir}"
     }
   }

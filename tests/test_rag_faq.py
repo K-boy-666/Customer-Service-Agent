@@ -8,13 +8,13 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from kb_service import FaqRetrievalService
 from orchestrator_runtime import CustomerServiceOrchestrator, LocalCustomerServiceTools
 
 
-FAQ_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "faq.json")
+FAQ_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "faq.json")
 
 
 class RagFaqTest(unittest.TestCase):

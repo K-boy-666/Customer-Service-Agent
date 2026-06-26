@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0",
+  "features": {
+    "core-orchestration": {
+      "title": "Multi-agent orchestration system",
+      "status": "done",
+      "description": "Orchestrator + Dispatcher + 6 sub-agents with ADR-0001 single-entry-point architecture",
+      "depends_on": [],
+      "done_criteria": [
+        "Orchestrator handles full conversation lifecycle (greet → triage → dispatch → integrate → close)",
+        "Dispatcher returns structured intent classification with confidence scores",
+        "All 6 sub-agents follow ADR-0002 communication protocol",
+        "Permission tiers (L0/L1/L2) enforced per ADR-0004"
+      ],
+      "verified_by": "tests/test_orchestrator_e2e.py"
+    },
+    "mcp-integrations": {
+      "title": "MCP server integrations (order-server + customer-service)",
+      "status": "done",
+      "description": "Two local stdio MCP servers exposing order queries, ticket CRUD, returns, FAQ, and analytics tools",
+      "depends_on": ["core-orchestration"],
+      "done_criteria": [
+        "order-server exposes 10 read-only tools for order/customer/shipment queries",
+        "customer-service exposes 13 tools across KB, ticket, returns, survey, analytics domains",
+        "Both servers launch automatically via .claude/mcp.json"
+      ],
+      "verified_by": "tests/test_smoke.py, tests/test_api_and_migration_e2e.py"
+    },
+    "emotional-escalation": {
+      "title": "Three-tier emotional escalation ladder (ADR-0003)",
+      "status": "done",
+      "description": "L1 Orchestrator → L2 complaint-agent → L3 human-handoff-agent with keyword triggers",
+      "depends_on": ["core-orchestration"],
+      "done_criteria": [
+        "L2 triggers: keywords 投诉/曝光/律师/监管/经理/315/起诉/法院",
+        "L3 triggers: self-harm, violence, legal threats → immediate transfer, zero soothing",
+        "L1 de-escalation handled by Orchestrator before routing"
+      ],
+      "verified_by": "tests/test_rag_customer_scenarios.py"
+    },
+    "customer-verification": {
+      "title": "Customer verification (OTP + scoped tokens)",
+      "status": "done",
+      "description": "JWT-based OTP verification with customer-scoped and order-scoped tokens per ADR-0005",
+      "depends_on": ["mcp-integrations"],
+      "done_criteria": [
+        "Customer-scoped token authorizes all orders owned by that customer",
+        "Order-scoped token authorizes only that specific order",
+        "Unscoped token rejected for protected resources"
+      ],
+      "verified_by": "tests/test_security_controls.py"
+    },
+    "analytics-telemetry": {
+      "title": "Usage analytics + daily reporting",
+      "status": "done",
+      "description": "Metadata-only usage events with daily Markdown report generation per ADR-0005",
+      "depends_on": ["mcp-integrations"],
+      "done_criteria": [
+        "Usage events record conversation metadata (no raw messages)",
+        "Daily reports interpret business days in REPORT_TIMEZONE (Asia/Shanghai)",
+        "Failed runs recorded before re-raise",
+        "data-analysis-agent generates daily reports via MCP tool"
+      ],
+      "verified_by": "tests/test_daily_analytics.py"
+    },
+    "rag-knowledge-base": {
+      "title": "RAG FAQ knowledge base",
+      "status": "done",
+      "description": "Semantic FAQ retrieval with embedding model fallback to lexical index",
+      "depends_on": ["mcp-integrations"],
+      "done_criteria": [
+        "search_faq returns ranked results with scores",
+        "get_faq_categories lists all categories with counts",
+        "get_faq_by_id retrieves single FAQ entry",
+        "consultation-agent queries KB for product/tutorial/activity/FAQ answers"
+      ],
+      "verified_by": "tests/test_rag_faq.py"
+    },
+    "satisfaction-survey": {
+      "title": "Satisfaction survey workflow",
+      "status": "done",
+      "description": "Post-conversation 1-5 star survey with low-score follow-up ticket creation",
+      "depends_on": ["core-orchestration", "mcp-integrations"],
+      "done_criteria": [
+        "Survey triggers after 2 rounds of no-new-questions + positive signal",
+        "4-5 stars: thank + invite comments",
+        "1-3 stars: apologize + create 低分回访 work order + escalate to human-handoff"
+      ],
+      "verified_by": "tests/test_orchestrator_e2e.py"
+    },
+    "ticket-lifecycle": {
+      "title": "Ticket lifecycle management",
+      "status": "done",
+      "description": "Full ITIL ticket CRUD: new → assigned → in_progress → pending → resolved → closed",
+      "depends_on": ["mcp-integrations"],
+      "done_criteria": [
+        "create_ticket with type/priority/description",
+        "get_ticket with full history and notes",
+        "list_tickets with status/assignee filters and pagination",
+        "update_ticket for status transitions and reassignment",
+        "search_tickets by keyword across title/description/ticket_number"
+      ],
+      "verified_by": "tests/test_api_and_migration_e2e.py"
+    },
+    "return-workflow": {
+      "title": "Return/exchange/refund workflow",
+      "status": "done",
+      "description": "After-sales return lifecycle: pending → approved → in_transit → received → refunded → completed",
+      "depends_on": ["mcp-integrations", "customer-verification"],
+      "done_criteria": [
+        "create_return with type (return/exchange/refund) and reason",
+        "get_return with full details including RMA number",
+        "list_returns with status/customer_id filters",
+        "update_return_status advances through lifecycle"
+      ],
+      "verified_by": "tests/test_scenario3_return.py"
+    }
+  },
+  "planned": [
+    {
+      "id": "production-deployment",
+      "title": "Production deployment hardening",
+      "description": "MySQL migration, secrets management, monitoring, CI/CD pipeline",
+      "priority": "P1"
+    },
+    {
+      "id": "load-testing",
+      "title": "Multi-agent concurrency and load testing",
+      "description": "Verify orchestrator behavior under parallel customer sessions",
+      "priority": "P2"
+    }
+  ],
+  "completed_order": [
+    "core-orchestration",
+    "mcp-integrations",
+    "emotional-escalation",
+    "ticket-lifecycle",
+    "return-workflow",
+    "satisfaction-survey",
+    "customer-verification",
+    "rag-knowledge-base",
+    "analytics-telemetry"
+  ]
+}

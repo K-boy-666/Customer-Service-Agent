@@ -1,7 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [project]
 name = "mcp-order-server"
 version = "0.1.0"
-description = "MCP server for querying a local order REST API"
+description = "Customer Service Agent 2.0 — multi-agent orchestration platform"
 requires-python = ">=3.10"
 dependencies = [
     "alembic>=1.13.0",
@@ -22,3 +29,8 @@ rag = [
 [project.scripts]
 order-server = "server:main"
 seed-orders = "seed_data:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

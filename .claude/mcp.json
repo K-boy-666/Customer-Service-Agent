@@ -2,7 +2,7 @@
   "mcpServers": {
     "customer-service": {
       "command": "python",
-      "args": ["server_customer.py"],
+      "args": ["src/server_customer.py"],
       "cwd": "${projectDir}",
       "env": {
         "API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjdXN0b21lci1zZXJ2aWNlLWRldiIsImF1ZCI6ImN1c3RvbWVyLXNlcnZpY2UtYXBpIiwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6Im9yY2hlc3RyYXRvciIsImlhdCI6MTc4MjIzOTI1OCwiZXhwIjoxNzgyMjQyODU4fQ.4e2bKjw5b5ukxNRP7YSaRMvQd_VGFifoMrGyhGJrnIw",
@@ -12,7 +12,7 @@
     },
     "order-server": {
       "command": "python",
-      "args": ["server.py"],
+      "args": ["src/server.py"],
       "cwd": "${projectDir}",
       "env": {
         "API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjdXN0b21lci1zZXJ2aWNlLWRldiIsImF1ZCI6ImN1c3RvbWVyLXNlcnZpY2UtYXBpIiwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6Im9yZGVyX2lucXVpcnkiLCJpYXQiOjE3ODIyMzkyNTgsImV4cCI6MTc4MjI0Mjg1OH0.973YMtHJ1y0y7PCQcleBBaJ6ZLpiD4TCSTE36VtLDPk",

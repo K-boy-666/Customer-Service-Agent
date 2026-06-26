@@ -25,7 +25,7 @@ from orchestrator_mcp_tool import handle_customer_message_tool
 # FAQ 鈥?loaded once at startup
 # ---------------------------------------------------------------------------
 
-FAQ_PATH = Path(__file__).parent / "faq.json"
+FAQ_PATH = Path(__file__).parent.parent / "data" / "faq.json"
 
 
 def _load_faq() -> list[dict]:
