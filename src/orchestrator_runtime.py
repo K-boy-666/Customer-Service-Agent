@@ -8,14 +8,15 @@ composition can be tested without launching a live LLM agent.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-import analytics_service
 import database
 import service_layer as svc
 from fastapi import HTTPException
@@ -24,6 +25,7 @@ from security import Actor, Verification, run_idempotent
 
 
 LOGGER = logging.getLogger(__name__)
+MAX_CONVERSATION_STATES = 256
 
 ORDER_ID_RE = re.compile(r"ORD-\d{8}-\d{3}", re.IGNORECASE)
 TRACKING_RE = re.compile(r"\b[A-Z]{2}\d{10,16}\b", re.IGNORECASE)
@@ -63,6 +65,16 @@ class CustomerContext:
     customer_id: int | None = None
     order_id: str | None = None
     conversation_id: str | None = None
+
+
+@dataclass
+class ConversationState:
+    customer_id: int | None = None
+    order_id: str | None = None
+    updated_at: str = ""
+
+
+_CONVERSATION_STATES: OrderedDict[str, ConversationState] = OrderedDict()
 
 
 @dataclass
@@ -144,7 +156,7 @@ class LocalCustomerServiceTools:
     ):
         self.faq_path = Path(faq_path or Path(__file__).parent.parent / "data" / "faq.json")
         self._faq: list[dict[str, Any]] | None = None
-        self._faq_retriever = faq_retriever or get_faq_retriever(str(self.faq_path))
+        self._faq_retriever = faq_retriever
         self.root_actor = root_actor or Actor("orchestrator-runtime", "orchestrator", {})
         self.verification = verification
         self.idempotency_key = idempotency_key
@@ -183,7 +195,19 @@ class LocalCustomerServiceTools:
             return svc.get_customer(session, self._agent("order_inquiry"), customer_id, self.verification)
 
     def search_faq(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
-        return self._faq_retriever.search(query, limit=limit)
+        return self._get_faq_retriever().search(query, limit=limit)
+
+    def _get_faq_retriever(self) -> FaqRetrievalService:
+        if self._faq_retriever is None:
+            self._faq_retriever = get_faq_retriever(str(self.faq_path))
+        return self._faq_retriever
+
+    def _scoped_idempotency_key(self, operation: str, payload: dict[str, Any], auto_key: str) -> str:
+        if not self.idempotency_key:
+            return auto_key
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+        return f"{self.idempotency_key}:{operation}:{digest}"
 
     def create_ticket(
         self,
@@ -196,13 +220,15 @@ class LocalCustomerServiceTools:
     ) -> dict[str, Any]:
         if self.verification is None:
             raise HTTPException(status_code=401, detail="missing_identity_verification")
+        payload = {"title": title, "description": description, "ticket_type": ticket_type, "priority": priority, "customer_id": customer_id, "order_id": order_id}
+        operation_key = self._scoped_idempotency_key("ticket", payload, f"auto-ticket-{title}-{customer_id}-{order_id}")
         with database.session_scope() as session:
             response, _code, _replayed = run_idempotent(
                 session,
                 self._agent("work_order"),
                 "orchestrator:create_ticket",
-                self.idempotency_key or f"auto-ticket-{title}-{customer_id}-{order_id}",
-                {"title": title, "description": description, "ticket_type": ticket_type, "priority": priority, "customer_id": customer_id, "order_id": order_id},
+                operation_key,
+                payload,
                 lambda: (
                     svc.create_ticket(
                         session,
@@ -214,7 +240,7 @@ class LocalCustomerServiceTools:
                         customer_id,
                         order_id,
                         self.verification,
-                        self.idempotency_key,
+                        operation_key,
                         self.request_id,
                     ),
                     201,
@@ -232,13 +258,15 @@ class LocalCustomerServiceTools:
     ) -> dict[str, Any] | None:
         if self.verification is None:
             raise HTTPException(status_code=401, detail="missing_identity_verification")
+        payload = {"order_id": order_id, "return_type": return_type, "reason": reason, "description": description, "customer_id": customer_id}
+        operation_key = self._scoped_idempotency_key("return", payload, f"auto-return-{order_id}-{return_type}")
         with database.session_scope() as session:
             response, _code, _replayed = run_idempotent(
                 session,
                 self._agent("after_sales"),
                 "orchestrator:create_return",
-                self.idempotency_key or f"auto-return-{order_id}-{return_type}",
-                {"order_id": order_id, "return_type": return_type, "reason": reason, "description": description, "customer_id": customer_id},
+                operation_key,
+                payload,
                 lambda: (
                     svc.create_return(
                         session,
@@ -249,7 +277,7 @@ class LocalCustomerServiceTools:
                         description,
                         customer_id,
                         self.verification,
-                        self.idempotency_key,
+                        operation_key,
                         self.request_id,
                     ),
                     201,
@@ -266,13 +294,15 @@ class LocalCustomerServiceTools:
     ) -> dict[str, Any]:
         if self.verification is None:
             raise HTTPException(status_code=401, detail="missing_identity_verification")
+        payload = {"rating": rating, "feedback": feedback, "customer_id": customer_id, "order_id": order_id}
+        operation_key = self._scoped_idempotency_key("survey", payload, f"auto-survey-{customer_id}-{order_id}-{rating}")
         with database.session_scope() as session:
             response, _code, _replayed = run_idempotent(
                 session,
                 self._agent("work_order"),
                 "orchestrator:submit_satisfaction",
-                self.idempotency_key or f"auto-survey-{customer_id}-{order_id}-{rating}",
-                {"rating": rating, "feedback": feedback, "customer_id": customer_id, "order_id": order_id},
+                operation_key,
+                payload,
                 lambda: (
                     svc.submit_survey(
                         session,
@@ -282,7 +312,7 @@ class LocalCustomerServiceTools:
                         customer_id,
                         order_id,
                         self.verification,
-                        self.idempotency_key,
+                        operation_key,
                         self.request_id,
                     ),
                     201,
@@ -339,10 +369,12 @@ class CustomerServiceOrchestrator:
                 idempotency_key=idempotency_key,
                 request_id=request_id,
             )
+        extracted_order_id = order_id or self._extract_order_id(message)
+        state = self._get_conversation_state(conversation_id)
         context = CustomerContext(
             message=message.strip(),
-            customer_id=customer_id,
-            order_id=order_id or self._extract_order_id(message),
+            customer_id=customer_id if customer_id is not None else state.customer_id,
+            order_id=extracted_order_id or state.order_id,
             conversation_id=conversation_id or f"conv-{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
         )
         self.tool_calls = []
@@ -399,6 +431,7 @@ class CustomerServiceOrchestrator:
                 needs_human=needs_human,
             )
             result = run.to_dict()
+            self._remember_conversation_state(context)
             self._record_usage_event(result, context)
             return result
         except Exception as exc:
@@ -413,6 +446,7 @@ class CustomerServiceOrchestrator:
                 tool_calls=self.tool_calls,
                 needs_human=False,
             )
+            self._remember_conversation_state(context)
             self._record_usage_event(run.to_dict(), context, failure_reason=str(exc))
             raise
 
@@ -574,7 +608,23 @@ class CustomerServiceOrchestrator:
 
         wants_shipment = self._contains_any(text, ("物流", "快递", "到哪", "发货", "签收"))
         if wants_shipment:
-            shipment = self._call_tool("get_shipment", self.tools.get_shipment, context.order_id)
+            try:
+                shipment = self._call_tool("get_shipment", self.tools.get_shipment, context.order_id)
+            except HTTPException as exc:
+                detail = str(getattr(exc, "detail", exc)).lower()
+                if exc.status_code == 404 and "shipment" in detail:
+                    item_names = "、".join(item["name"] for item in order["items"][:3])
+                    return AgentResult(
+                        "order-inquiry-agent",
+                        "partial",
+                        (
+                            f"订单 {order['id']} 当前状态是 {order['status']}，"
+                            f"商品包括 {item_names}。目前没有物流记录，可能尚未发货、订单已取消，"
+                            "或该订单不需要物流。我会把已经处理的事项一并记录。"
+                        ),
+                        f"Order lookup succeeded for order_id={context.order_id}; no shipment record was available.",
+                    )
+                raise
             if shipment:
                 return self._shipment_result(shipment, f"order_id={context.order_id}", order)
 
@@ -753,6 +803,8 @@ class CustomerServiceOrchestrator:
         failure_reason: str = "",
     ) -> None:
         try:
+            import analytics_service
+
             with database.session_scope() as session:
                 analytics_service.record_usage_event_from_result(
                     session,
@@ -903,6 +955,31 @@ class CustomerServiceOrchestrator:
                 seen.add(value)
                 result.append(value)
         return result
+
+    @staticmethod
+    def _get_conversation_state(conversation_id: str | None) -> ConversationState:
+        if not conversation_id:
+            return ConversationState()
+        state = _CONVERSATION_STATES.get(conversation_id)
+        if state is None:
+            return ConversationState()
+        _CONVERSATION_STATES.move_to_end(conversation_id)
+        return state
+
+    @staticmethod
+    def _remember_conversation_state(context: CustomerContext) -> None:
+        if not context.conversation_id:
+            return
+        existing = _CONVERSATION_STATES.get(context.conversation_id, ConversationState())
+        state = ConversationState(
+            customer_id=context.customer_id if context.customer_id is not None else existing.customer_id,
+            order_id=context.order_id or existing.order_id,
+            updated_at=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+        _CONVERSATION_STATES[context.conversation_id] = state
+        _CONVERSATION_STATES.move_to_end(context.conversation_id)
+        while len(_CONVERSATION_STATES) > MAX_CONVERSATION_STATES:
+            _CONVERSATION_STATES.popitem(last=False)
 
 
 

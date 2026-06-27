@@ -16,29 +16,29 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-import analytics_service
 import api_client
 from kb_service import get_faq_retriever
 from orchestrator_mcp_tool import handle_customer_message_tool
 
 # ---------------------------------------------------------------------------
-# FAQ 鈥?loaded once at startup
+# FAQ helpers. Keep these lazy so customer-message startup does not pay FAQ cost.
 # ---------------------------------------------------------------------------
 
 FAQ_PATH = Path(__file__).parent.parent / "data" / "faq.json"
+_faq_retriever = None
 
 
-def _load_faq() -> list[dict]:
-    """Load the FAQ database from the JSON file."""
-    with open(FAQ_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+def _get_faq_retriever():
+    """Return the cached FAQ retriever, building it only on first FAQ use."""
+    global _faq_retriever
+    if _faq_retriever is None:
+        _faq_retriever = get_faq_retriever(str(FAQ_PATH))
+    return _faq_retriever
 
 
-FAQ = _load_faq()
-FAQ_RETRIEVER = get_faq_retriever(str(FAQ_PATH))
-
-# Pre-compute category list for fast lookup
-FAQ_CATEGORIES = [row["category"] for row in FAQ_RETRIEVER.categories()]
+def _get_faq_categories() -> list[str]:
+    """Return FAQ category names from the lazy retriever."""
+    return [row["category"] for row in _get_faq_retriever().categories()]
 
 # ---------------------------------------------------------------------------
 # Server
@@ -121,9 +121,10 @@ async def search_faq(query: str, category: str = "", limit: int = 10) -> str:
     The retriever uses a local embedding model when available and falls back
     to an in-process lexical index when optional model dependencies are absent.
     """
-    results = FAQ_RETRIEVER.search(query, limit=limit, category=category)
+    retriever = _get_faq_retriever()
+    results = retriever.search(query, limit=limit, category=category)
     if not results:
-        all_cats = ", ".join(FAQ_CATEGORIES)
+        all_cats = ", ".join(_get_faq_categories())
         return (
             f"No FAQ entries found for '{query}'. "
             f"Try different keywords or a broader search. "
@@ -145,7 +146,7 @@ async def get_faq_categories() -> str:
     Use this first to understand what topics the knowledge base covers,
     then use search_faq with a category filter for targeted results.
     """
-    return json.dumps(FAQ_RETRIEVER.categories(), ensure_ascii=False, indent=2)
+    return json.dumps(_get_faq_retriever().categories(), ensure_ascii=False, indent=2)
 
 
 @mcp.tool(
@@ -161,7 +162,7 @@ async def get_faq_by_id(faq_id: str) -> str:
     Use this when you already know the FAQ ID from a previous search_faq result,
     or when you need the full details of a specific FAQ entry.
     """
-    entry = FAQ_RETRIEVER.get_by_id(faq_id)
+    entry = _get_faq_retriever().get_by_id(faq_id)
     if entry is not None:
         return json.dumps(entry, ensure_ascii=False, indent=2)
     return f"FAQ entry '{faq_id}' not found. Use search_faq to find relevant entries."
@@ -529,6 +530,8 @@ async def get_usage_analytics(date: str = "yesterday") -> str:
 )
 async def generate_daily_usage_report(date: str = "yesterday", output_dir: str = "reports/daily") -> str:
     """Generate a local Markdown analytics report for a report date."""
+    import analytics_service
+
     data = await api_client.get_usage_analytics(date)
     path = analytics_service.write_markdown_report(data, output_dir)
     return json.dumps({"date": data["date"], "report_path": str(path)}, ensure_ascii=False, indent=2)

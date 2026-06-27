@@ -14,6 +14,13 @@ Before the conversation ends:
 1. Append a `## Session` block to `session-handoff.md`.
 2. Update `progress.md` if feature state or verification evidence changed.
 
+## Fast Agent Workflow
+
+- Prefer `C:\Users\JOSAP\scoop\shims\rg.exe` for searches. In an existing PowerShell session, prepend `$env:USERPROFILE\scoop\shims` to `PATH` before running `rg`.
+- Do not run unrestricted `Get-ChildItem -Recurse` from the repository root. If PowerShell fallback search is needed, exclude `.venv`, `.git`, `.pytest_cache`, and `__pycache__`.
+- When testing Chinese customer messages in PowerShell, use UTF-8 file input or Unicode escapes. Avoid inline Chinese here-strings that can be corrupted by the console code page.
+- When diagnosing customer requests, reuse MCP or the same Python process where practical. Avoid one cold Python/FastMCP startup per message.
+
 ## Routing Directive (Mandatory)
 
 All customer-facing interactions must go through `customer-service-orchestrator`.

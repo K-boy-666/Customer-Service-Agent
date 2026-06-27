@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import sys
@@ -15,8 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 import database
 import seed_data
-from models import CustomerServiceUsageEvent, Order, ReturnRequest, Ticket
-from orchestrator_runtime import CustomerServiceOrchestrator
+from models import CustomerServiceUsageEvent, Order, ReturnRequest, SatisfactionSurvey, Ticket
+from orchestrator_runtime import CustomerServiceOrchestrator, _CONVERSATION_STATES
 from security import Actor, create_dev_jwt, load_verification, request_otp, verify_otp
 
 
@@ -27,6 +28,7 @@ class OrchestratorE2ETest(unittest.TestCase):
         os.environ["DATABASE_URL"] = "sqlite+pysqlite:///" + self.db_path.replace("\\", "/")
         os.environ["AUTH_DEV_SECRET"] = "customer-service-test-secret-min-32-bytes"
         database.reset_engine_for_tests()
+        _CONVERSATION_STATES.clear()
         database.init_db()
         session = database.get_session()
         try:
@@ -67,6 +69,18 @@ class OrchestratorE2ETest(unittest.TestCase):
             return session.query(model).count()
         finally:
             session.close()
+
+    def _import_src_order_api(self):
+        src_order_api = os.path.abspath(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "order_api.py")
+        )
+        spec = importlib.util.spec_from_file_location("order_api", src_order_api)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["order_api"] = module
+        spec.loader.exec_module(module)
+        return module
 
     def test_agent_runtime_routes_order_inquiry_and_preserves_protocol_output(self):
         order_id, customer_id, verification_token = self._first_order("delivered")
@@ -121,7 +135,8 @@ class OrchestratorE2ETest(unittest.TestCase):
 
     def test_api_endpoint_creates_after_sales_refund_request(self):
         from starlette.testclient import TestClient
-        import order_api
+
+        order_api = self._import_src_order_api()
 
         order_id, customer_id, verification_token = self._first_order("delivered")
         before = self._count(ReturnRequest)
@@ -172,6 +187,95 @@ class OrchestratorE2ETest(unittest.TestCase):
         self.assertIn("work-order-agent", body["dispatched_agents"])
         self.assertIn("create_ticket", {call["tool"] for call in body["tool_calls"]})
         self.assertEqual(self._count(Ticket), before + 1)
+
+    def test_mcp_tool_reports_partial_business_result_after_successful_writes(self):
+        import server_customer
+
+        order_id, customer_id, verification_token = self._first_order("cancelled")
+        before_returns = self._count(ReturnRequest)
+        before_surveys = self._count(SatisfactionSurvey)
+        before_tickets = self._count(Ticket)
+
+        raw = asyncio.run(
+            server_customer.handle_customer_message(
+                message=(
+                    f"\u8ba2\u5355 {order_id} \u7269\u6d41\u5230\u54ea\u4e86\uff1f"
+                    "\u6211\u8981\u9000\u8d27\uff0c\u6211\u8981\u6295\u8bc9\uff0c\u7ed9\u8fd9\u6b21\u670d\u52a1\u6253 3 stars"
+                ),
+                customer_id=customer_id,
+                conversation_id="mcp-e2e-partial-after-writes",
+                actor_subject="mcp-user",
+                actor_role="orchestrator",
+                verification_token=verification_token,
+                idempotency_key="mcp-multi-intent-key",
+            )
+        )
+        body = json.loads(raw)
+
+        self.assertEqual(body["status"], "needs-human")
+        self.assertNotEqual(body["status"], "denied")
+        self.assertIn("order-inquiry-agent", body["dispatched_agents"])
+        self.assertIn("after-sales-agent", body["dispatched_agents"])
+        self.assertIn("work-order-agent", body["dispatched_agents"])
+        self.assertIn("get_shipment", {call["tool"] for call in body["tool_calls"]})
+        self.assertEqual(self._count(ReturnRequest), before_returns + 1)
+        self.assertEqual(self._count(SatisfactionSurvey), before_surveys + 1)
+        self.assertEqual(self._count(Ticket), before_tickets + 2)
+
+        retry = asyncio.run(
+            server_customer.handle_customer_message(
+                message=(
+                    f"\u8ba2\u5355 {order_id} \u7269\u6d41\u5230\u54ea\u4e86\uff1f"
+                    "\u6211\u8981\u9000\u8d27\uff0c\u6211\u8981\u6295\u8bc9\uff0c\u7ed9\u8fd9\u6b21\u670d\u52a1\u6253 3 stars"
+                ),
+                customer_id=customer_id,
+                conversation_id="mcp-e2e-partial-after-writes-retry",
+                actor_subject="mcp-user",
+                actor_role="orchestrator",
+                verification_token=verification_token,
+                idempotency_key="mcp-multi-intent-key",
+            )
+        )
+        self.assertEqual(json.loads(retry)["status"], "needs-human")
+        self.assertEqual(self._count(ReturnRequest), before_returns + 1)
+        self.assertEqual(self._count(SatisfactionSurvey), before_surveys + 1)
+        self.assertEqual(self._count(Ticket), before_tickets + 2)
+
+    def test_conversation_state_reuses_order_context_for_follow_up(self):
+        from orchestrator_api import respond_to_customer_message
+
+        order_id, customer_id, verification_token = self._first_order("delivered")
+        session = database.get_session()
+        try:
+            verification = load_verification(session, verification_token)
+        finally:
+            session.close()
+
+        respond_to_customer_message(
+            {
+                "message": f"\u8ba2\u5355 {order_id} \u7269\u6d41\u5230\u54ea\u4e86?",
+                "customer_id": customer_id,
+                "conversation_id": "conversation-state-follow-up",
+            },
+            actor=Actor("api-user", "orchestrator", {}),
+            verification=verification,
+        )
+
+        before = self._count(ReturnRequest)
+        follow_up = respond_to_customer_message(
+            {
+                "message": "\u6211\u8981\u9000\u8d27",
+                "conversation_id": "conversation-state-follow-up",
+            },
+            actor=Actor("api-user", "orchestrator", {}),
+            verification=verification,
+            idempotency_key="conversation-state-return",
+        )
+
+        self.assertEqual(follow_up["status"], "success")
+        self.assertIn("after-sales-agent", follow_up["dispatched_agents"])
+        self.assertIn(order_id, follow_up["customer_reply"])
+        self.assertEqual(self._count(ReturnRequest), before + 1)
 
     def test_mcp_tool_denies_non_orchestrator_role_for_customer_flow(self):
         import server_customer

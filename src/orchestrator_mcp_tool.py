@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import database
+from fastapi import HTTPException
 from orchestrator_api import respond_to_customer_message
 from security import Actor, load_verification
 
@@ -37,10 +38,23 @@ def handle_customer_message_tool(
             verification=verification,
             idempotency_key=idempotency_key,
         )
+    except HTTPException as exc:
+        if exc.status_code in {401, 403}:
+            result = {
+                "status": "denied",
+                "customer_reply": "当前调用没有足够的后端权限或身份核验，未执行任何业务写入。",
+                "error": str(exc.detail),
+            }
+        else:
+            result = {
+                "status": "failed",
+                "customer_reply": "当前请求处理时遇到业务异常，部分已完成的操作可能已经记录，请按返回的记录或工单继续跟进。",
+                "error": str(exc.detail),
+            }
     except Exception as exc:
         result = {
-            "status": "denied",
-            "customer_reply": "当前调用没有足够的后端权限或身份核验，未执行任何业务写入。",
+            "status": "failed",
+            "customer_reply": "当前请求处理时遇到内部异常，部分已完成的操作可能已经记录，请按返回的记录或工单继续跟进。",
             "error": str(exc),
         }
     return json.dumps(result, ensure_ascii=False, indent=2)

@@ -193,3 +193,63 @@
 **Open risks / follow-ups**:
 - REST API was not running during check-only validation; start `uvicorn order_api:app --reload --port 8000` when live API probes are required.
 - Broader product prompt/FAQ Chinese text still contains mojibake in parts of the repository; this session fixed governance/runtime-risk surfaces only.
+---
+
+## Session: 2026-06-27 (agent latency hardening implementation)
+
+**Branch**: `main`
+**Active feature**: Agent response speed hardening based on prior latency diagnosis.
+**Outcome**: Implemented; core regression and performance checks passed; full-suite verification blocked by Windows permission issues in temporary directories.
+
+**What was done**:
+- Added Fast Agent Workflow rules to `AGENTS.md` and `CLAUDE.md`: prefer Scoop `rg`, avoid unrestricted recursive PowerShell search, use UTF-8/Unicode fixtures for Chinese, and reuse MCP/same Python process for diagnostics.
+- Made `src/server_customer.py` lazy-load FAQ retriever/categories and `analytics_service` for report generation only.
+- Made `src/orchestrator_runtime.py` lazy-load FAQ retriever only when `search_faq` is called, and lazy-load `analytics_service` only when recording usage events.
+- Added regression coverage in `tests/test_harness_risk_controls.py` for workflow rules and lazy cold-start behavior.
+
+**Verification evidence**:
+- `.\init.cmd --check-only --skip-tests`: usable; warnings only for REST API not running and skipped tests.
+- `$env:Path="$env:USERPROFILE\scoop\shims;$env:Path"; rg --version`: ripgrep 15.1.0.
+- `.\.venv\Scripts\python.exe -m pytest tests\test_harness_risk_controls.py -q -p no:cacheprovider`: 8 passed.
+- `.\.venv\Scripts\python.exe -m pytest tests\test_harness_risk_controls.py tests\test_rag_faq.py tests\test_rag_customer_scenarios.py -q -p no:cacheprovider`: 14 passed, 14 subtests passed.
+- Performance probes: `server_customer` import leaves `analytics_loaded=false` and `faq_loaded=false`; non-FAQ complaint path leaves `faq_factory_calls=0` before expected identity-verification failure.
+
+**Verification caveats**:
+- `uv run pytest ...` failed before tests because uv could not write/read under user AppData cache/temp paths in this sandbox.
+- Full `.venv` pytest run reached 39 passed, 14 subtests passed, then failed in `DailyAnalyticsTest.test_cli_writes_markdown_report` due temporary-directory permission/cleanup failures unrelated to this change.
+- Two directories created during the failed temp-dir verification could not be removed because Windows denied access: `.tmp-pytest` and `.tmp-pytest-analytics`.
+- There is an unrelated untracked root `order_api.py` in the working tree; this session did not modify it.
+
+**Open follow-ups**:
+- Clear the locked `.tmp-pytest*` directories after the OS releases them or from an elevated shell.
+- Investigate why pytest subprocess temp directories under this sandbox get ACL-denied during daily analytics CLI tests.
+
+---
+
+## Session: 2026-06-27 (agent reliability hardening implementation)
+
+**Branch**: `main`
+**Active feature**: First batch of agent improvement plan: partial results, multi-write idempotency, and conversation context.
+**Outcome**: Implemented; focused regression tests passed; full-suite verification still blocked by Windows temp/uv permission issues.
+
+**What was done**:
+- Changed `src/orchestrator_mcp_tool.py` so only 401/403 `HTTPException`s become `denied`; other business/runtime errors become `failed` and no longer claim that no business writes occurred.
+- Changed `src/orchestrator_runtime.py` order inquiry handling so missing shipment records return a partial business result after successful order lookup instead of aborting a multi-intent request.
+- Added per-operation idempotency key derivation for orchestrator fan-out writes, so one caller key can safely cover survey, return, low-score ticket, and complaint ticket writes.
+- Added bounded in-process conversation state keyed by `conversation_id`, storing only recent `customer_id` and `order_id` for follow-up turns.
+- Added E2E coverage for partial-after-writes MCP behavior, idempotent retry of multi-intent writes, and follow-up return requests that reuse prior conversation order context.
+
+**Verification evidence**:
+- `.\.venv\Scripts\python.exe -m pytest tests\test_orchestrator_e2e.py -q -p no:cacheprovider`: 7 passed.
+- `.\.venv\Scripts\python.exe -m pytest tests\test_harness_risk_controls.py tests\test_rag_faq.py tests\test_rag_customer_scenarios.py tests\test_security_controls.py -q -p no:cacheprovider`: 23 passed, 14 subtests passed.
+- `.\init.cmd --check-only --skip-tests`: no failures; warnings only for REST API not running and skipped tests.
+- `$env:Path="$env:USERPROFILE\scoop\shims;$env:Path"; rg --version`: ripgrep 15.1.0.
+
+**Verification caveats**:
+- Full `.venv` pytest currently reports 41 passed, 14 subtests passed, then fails in `DailyAnalyticsTest.test_cli_writes_markdown_report` because Windows denies access to the generated temp report directory during subprocess/cleanup.
+- `uv run pytest ...` is blocked before test execution by Windows permission errors in uv cache/build temp directories, including after setting `UV_CACHE_DIR` inside the workspace.
+- Locked temp directories remain visible to `git status` warnings: `.pytest_cache`, `.tmp-pytest`, `.tmp-pytest-analytics`, and `.tmp-test-run`.
+
+**Open follow-ups**:
+- Clear locked temp directories after the OS releases them or from an elevated shell.
+- Investigate the daily analytics CLI test's subprocess temp-directory ACL behavior separately from orchestrator reliability work.

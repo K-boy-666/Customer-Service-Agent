@@ -1,6 +1,6 @@
 # Progress — 客服智能体 2.0
 
-> Last updated: 2026-06-26
+> Last updated: 2026-06-27
 > Active branch: `main`
 
 ## Current feature
@@ -66,3 +66,18 @@ $ bash init.sh
   - `node scripts/harness/validate-harness.mjs` with bundled Node -> weighted total 100/100, all checks passed.
   - `./init.cmd --check-only --skip-tests` -> no failures; warnings only for REST API not running and tests intentionally skipped.
   - `./init.cmd` ran successfully earlier in this session after adding the entrypoint -> tests passed; later rerun was blocked by platform usage limit, not by project failure.
+
+## Agent reliability hardening verification - 2026-06-27
+
+- MCP `handle_customer_message` now classifies only auth/permission failures as `denied`; business/runtime failures return `failed` without claiming that no writes happened.
+- Order shipment lookup now treats missing shipment records as a partial business result after order lookup, so prior successful actions in a multi-intent request are still surfaced.
+- Orchestrator write fan-out now derives per-operation idempotency keys from the caller key plus operation payload, preventing low-score and complaint tickets from colliding.
+- Conversation state now remembers recent `customer_id` and `order_id` by `conversation_id`, allowing follow-up turns such as `I want to return it` to reuse context without storing raw messages.
+- Verification evidence:
+  - `.\.venv\Scripts\python.exe -m pytest tests\test_orchestrator_e2e.py -q -p no:cacheprovider` -> 7 passed.
+  - `.\.venv\Scripts\python.exe -m pytest tests\test_harness_risk_controls.py tests\test_rag_faq.py tests\test_rag_customer_scenarios.py tests\test_security_controls.py -q -p no:cacheprovider` -> 23 passed, 14 subtests passed.
+  - `.\init.cmd --check-only --skip-tests` -> no failures; warnings only for REST API not running and tests intentionally skipped.
+  - `$env:Path="$env:USERPROFILE\scoop\shims;$env:Path"; rg --version` -> ripgrep 15.1.0.
+- Verification caveats:
+  - Full `.venv` pytest currently reaches 41 passed, 14 subtests passed, then fails in `DailyAnalyticsTest.test_cli_writes_markdown_report` due Windows temp-directory permission/cleanup errors.
+  - `uv run pytest ...` is blocked by Windows permission errors in the uv cache/build temp directories, even with `UV_CACHE_DIR` moved into the workspace.

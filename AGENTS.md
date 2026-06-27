@@ -56,6 +56,13 @@ uvicorn order_api:app --reload --port 8000
 7. **Respect permission tiers:** L0 agents are read-only, L1 can create records, L2 is conversation-only.
 8. **Follow ADR-0002 protocol:** input uses customer context + task; output uses processing result + customer reply + internal notes.
 
+## Fast Agent Workflow
+
+- Prefer `C:\Users\JOSAP\scoop\shims\rg.exe` for searches. In an existing PowerShell session, prepend `$env:USERPROFILE\scoop\shims` to `PATH` before running `rg`.
+- Do not run unrestricted `Get-ChildItem -Recurse` from the repository root. If PowerShell fallback search is needed, exclude `.venv`, `.git`, `.pytest_cache`, and `__pycache__`.
+- When testing Chinese customer messages in PowerShell, use UTF-8 file input or Unicode escapes. Avoid inline Chinese here-strings that can be corrupted by the console code page.
+- When diagnosing customer requests, reuse MCP or the same Python process where practical. Avoid one cold Python/FastMCP startup per message.
+
 ## Definition Of Done
 
 A feature is done only when all of these are true:
