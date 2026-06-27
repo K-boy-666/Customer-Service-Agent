@@ -5,13 +5,17 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any, Iterator
 
+import logging
+
 import analytics_service
+import config as runtime_config
 import database
 import seed_data
 import service_layer as svc
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from api_dependencies import actor_dependency, request_id_dependency
@@ -28,8 +32,17 @@ from security import (
 )
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        runtime_config.validate_runtime_config()
+    except RuntimeError:
+        if runtime_config.is_production():
+            raise
+        LOGGER.warning("runtime configuration is not production-ready", exc_info=True)
     database.init_db()
     if database.is_db_empty():
         session = database.get_session()
@@ -75,6 +88,30 @@ class OtpVerifyRequest(BaseModel):
     code: str
 
 
+class TicketCreateRequest(BaseModel):
+    title: str
+    type: str = "incident"
+    priority: str = "P3"
+    description: str = ""
+    customer_id: int | None = None
+    order_id: str | None = None
+
+
+class ReturnCreateRequest(BaseModel):
+    order_id: str
+    type: str = "return"
+    reason: str
+    description: str = ""
+    customer_id: int | None = None
+
+
+class SurveyCreateRequest(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+    feedback: str = ""
+    customer_id: int | None = None
+    order_id: str | None = None
+
+
 def _model_dump(payload: BaseModel) -> dict[str, Any]:
     return payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
 
@@ -86,6 +123,75 @@ def _verification(session: Session, token: str | None):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "database_url": database.get_database_url().split("@")[-1]}
+
+
+@app.get("/api/ready")
+def ready(session: Session = Depends(db_session)):
+    checks: dict[str, dict[str, Any]] = {}
+    try:
+        session.execute(text("SELECT 1"))
+        checks["database"] = {"status": "ok"}
+    except Exception as exc:
+        checks["database"] = {"status": "failed", "detail": str(exc)}
+
+    required_tables = {
+        "orders",
+        "tickets",
+        "returns",
+        "satisfaction_surveys",
+        "customer_service_usage_events",
+        "conversation_states",
+    }
+    try:
+        from sqlalchemy import inspect
+
+        existing = set(inspect(database.get_engine()).get_table_names())
+        missing = sorted(required_tables - existing)
+        checks["migrations"] = {"status": "ok" if not missing else "failed", "missing_tables": missing}
+    except Exception as exc:
+        checks["migrations"] = {"status": "failed", "detail": str(exc)}
+
+    cfg = runtime_config.load_runtime_config()
+    checks["configuration"] = {
+        "status": "ok",
+        "app_env": cfg.app_env,
+        "otp_provider": cfg.otp_provider,
+        "report_timezone": cfg.report_timezone,
+        "faq_rag_backend": cfg.faq_rag_backend,
+        "oidc_jwks_configured": bool(cfg.oidc_jwks_url),
+    }
+    checks["rag"] = {"status": "ok", "backend": cfg.faq_rag_backend}
+    overall = "ok" if all(check.get("status") == "ok" for check in checks.values()) else "degraded"
+    return {"status": overall, "checks": checks}
+
+
+@app.get("/api/metrics", response_class=PlainTextResponse)
+def metrics(session: Session = Depends(db_session)):
+    from models import CustomerServiceUsageEvent, ReturnRequest, SatisfactionSurvey, Ticket
+
+    conversations = session.query(CustomerServiceUsageEvent).count()
+    handoffs = session.query(CustomerServiceUsageEvent).filter_by(needs_human=1).count()
+    tickets = session.query(Ticket).count()
+    returns = session.query(ReturnRequest).count()
+    surveys = session.query(SatisfactionSurvey).count()
+    lines = [
+        "# HELP customer_service_conversations_total Total orchestrator conversations recorded.",
+        "# TYPE customer_service_conversations_total counter",
+        f"customer_service_conversations_total {conversations}",
+        "# HELP customer_service_handoffs_total Total conversations that needed human handoff.",
+        "# TYPE customer_service_handoffs_total counter",
+        f"customer_service_handoffs_total {handoffs}",
+        "# HELP customer_service_tickets_total Total tickets.",
+        "# TYPE customer_service_tickets_total gauge",
+        f"customer_service_tickets_total {tickets}",
+        "# HELP customer_service_returns_total Total return requests.",
+        "# TYPE customer_service_returns_total gauge",
+        f"customer_service_returns_total {returns}",
+        "# HELP customer_service_surveys_total Total satisfaction surveys.",
+        "# TYPE customer_service_surveys_total gauge",
+        f"customer_service_surveys_total {surveys}",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 @app.post("/api/auth/otp/request")
@@ -220,6 +326,44 @@ def create_ticket(
     return JSONResponse(status_code=code, content=response)
 
 
+@app.post("/api/v2/tickets", status_code=201)
+def create_ticket_v2(
+    payload: TicketCreateRequest,
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
+):
+    key = require_idempotency_key(idempotency_key)
+    verification = _verification(session, verification_token)
+    data = _model_dump(payload)
+    response, code, _replayed = run_idempotent(
+        session,
+        actor,
+        "POST /api/v2/tickets",
+        key,
+        data,
+        lambda: (
+            svc.create_ticket(
+                session,
+                actor,
+                payload.title,
+                payload.description,
+                payload.type,
+                payload.priority,
+                payload.customer_id,
+                payload.order_id,
+                verification,
+                key,
+                request_id,
+            ),
+            201,
+        ),
+    )
+    return JSONResponse(status_code=code, content=response)
+
+
 @app.get("/api/tickets")
 def list_tickets(status_filter: str | None = Query(None, alias="status"), assignee: str | None = Query(None), limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
     return svc.list_tickets(session, actor, status_filter, assignee, limit, offset)
@@ -316,6 +460,43 @@ def create_return(
     return JSONResponse(status_code=code, content=response)
 
 
+@app.post("/api/v2/returns", status_code=201)
+def create_return_v2(
+    payload: ReturnCreateRequest,
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
+):
+    key = require_idempotency_key(idempotency_key)
+    verification = _verification(session, verification_token)
+    data = _model_dump(payload)
+    response, code, _replayed = run_idempotent(
+        session,
+        actor,
+        "POST /api/v2/returns",
+        key,
+        data,
+        lambda: (
+            svc.create_return(
+                session,
+                actor,
+                payload.order_id,
+                payload.type,
+                payload.reason,
+                payload.description,
+                payload.customer_id,
+                verification,
+                key,
+                request_id,
+            ),
+            201,
+        ),
+    )
+    return JSONResponse(status_code=code, content=response)
+
+
 @app.get("/api/returns")
 def list_returns(status_filter: str | None = Query(None, alias="status"), customer_id: int | None = Query(None), limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), actor: Actor = Depends(actor_dependency), session: Session = Depends(db_session)):
     return svc.list_returns(session, actor, status_filter, customer_id, limit, offset)
@@ -380,6 +561,42 @@ def submit_survey(
         key,
         payload,
         lambda: (svc.submit_survey(session, actor, rating, feedback, customer_id, order_id, verification, key, request_id), 201),
+    )
+    return JSONResponse(status_code=code, content=response)
+
+
+@app.post("/api/v2/surveys", status_code=201)
+def submit_survey_v2(
+    payload: SurveyCreateRequest,
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    verification_token: str | None = Header(None, alias="X-Identity-Verification"),
+    request_id: str = Depends(request_id_dependency),
+):
+    key = require_idempotency_key(idempotency_key)
+    verification = _verification(session, verification_token)
+    data = _model_dump(payload)
+    response, code, _replayed = run_idempotent(
+        session,
+        actor,
+        "POST /api/v2/surveys",
+        key,
+        data,
+        lambda: (
+            svc.submit_survey(
+                session,
+                actor,
+                payload.rating,
+                payload.feedback,
+                payload.customer_id,
+                payload.order_id,
+                verification,
+                key,
+                request_id,
+            ),
+            201,
+        ),
     )
     return JSONResponse(status_code=code, content=response)
 

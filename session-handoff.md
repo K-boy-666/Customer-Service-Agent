@@ -300,3 +300,31 @@
 
 **Open follow-ups**:
 - Full MCP server import still costs about 3.6s because FastMCP itself pulls a heavy dependency chain; optimize separately only if MCP process startup, rather than one-off diagnostics, remains user-visible.
+
+---
+
+## Session: 2026-06-27 (production hardening implementation)
+
+**Branch**: `main`
+**Active feature**: Production-grade customer-service hardening.
+**Outcome**: Implemented major P0/P1 hardening slices and verified full local test gate.
+
+**What was done**:
+- Removed hardcoded MCP credentials and added `.env.example`.
+- Added production runtime config validation, readiness, metrics, JSON body v2 write endpoints, Dockerfile, docker-compose MySQL stack, and production hardening docs.
+- Added dispatcher module interface with evidence/fallback metadata and a hybrid fallback seam.
+- Added durable conversation state table/migration and handoff packages for human escalation.
+- Reworked Alembic `0001_initial_schema` into explicit operations and added `0003_conversation_states`.
+- Added in-process sequence guards for ticket/return/survey numbers under concurrent local writes.
+- Stabilized daily analytics CLI output tests under Windows workspace paths.
+- Hardened `scripts/harness/init_check.py` to use UTF-8 subprocess decoding and `.venv` for migration/test stages.
+
+**Verification evidence**:
+- `.\.venv\Scripts\python.exe -m pytest tests\ -q -p no:cacheprovider`: 48 passed, 14 subtests passed.
+- `.\init.cmd`: all stages pass; warning only for REST API localhost:8000 not running.
+- Bundled Node `scripts/harness/validate-harness.mjs`: weighted total 100/100, all checks passed.
+
+**Open follow-ups**:
+- Raw `uv run pytest tests/ -q` remains blocked by Windows/OneDrive uv cache/editable-build ACL errors in this environment; init now avoids that path by using `.venv`.
+- Multi-process numbering should eventually move from in-process sequence guards to a DB-native sequence/counter adapter before horizontal API scaling.
+- External OTP, OIDC/JWKS, analytics webhook/email, and true LLM/RAG dispatcher providers still need real credentials/provider adapters for production rollout.

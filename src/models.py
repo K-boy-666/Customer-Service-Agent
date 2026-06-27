@@ -188,6 +188,16 @@ class CustomerServiceUsageEvent(Base):
     failure_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False, index=True)
 
+
+class ConversationStateRecord(Base):
+    __tablename__ = "conversation_states"
+
+    conversation_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    customer_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    order_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 

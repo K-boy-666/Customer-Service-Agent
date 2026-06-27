@@ -97,3 +97,20 @@ $ bash init.sh
   - `uv run pytest tests/ -q` -> 42 passed, 14 subtests passed.
   - `.\init.cmd --check-only --skip-tests` -> no failures; warnings only for REST API not running and tests intentionally skipped.
   - `node scripts/harness/validate-harness.mjs` with bundled Node -> weighted total 100/100, all checks passed.
+
+## Production hardening implementation - 2026-06-27
+
+- Removed static MCP credentials from `.claude/mcp.json`; runtime secrets now belong in environment variables documented by `.env.example`.
+- Added production config validation (`APP_ENV=production` blocks dev OTP, default dev JWT secret, missing OIDC JWKS, and SQLite production DB).
+- Added `/api/ready`, `/api/metrics`, and JSON body write endpoints under `/api/v2/*` while keeping existing query-param endpoints compatible.
+- Added a dispatcher module interface with deterministic rule fallback, evidence/fallback metadata, safety notes, and a hybrid adapter seam.
+- Added durable `conversation_states` storage plus Alembic migration `0003`, and made `0001_initial_schema` explicit instead of `Base.metadata.create_all`.
+- Added handoff packages for human escalation, concurrency-safe in-process number sequencing for ticket/return/survey creation, and Windows-stable daily analytics CLI output tests.
+- Added Dockerfile, docker-compose MySQL smoke stack, `.dockerignore`, and `docs/production-hardening.md`.
+- Hardened `scripts/harness/init_check.py` on Windows by using UTF-8 subprocess decoding and the existing `.venv` for migrations/tests, avoiding broken uv cache paths.
+- Verification evidence:
+  - `.\.venv\Scripts\python.exe -m pytest tests\ -q -p no:cacheprovider` -> 48 passed, 14 subtests passed.
+  - `.\init.cmd` -> all stages pass; one warning only because REST API localhost:8000 is not running.
+  - Bundled Node `scripts/harness/validate-harness.mjs` -> weighted total 100/100, all checks passed.
+- Verification caveat:
+  - Raw `uv run pytest tests/ -q` is still blocked in this Windows/OneDrive environment when uv tries to initialize/build through protected cache/temp paths. The project init now uses `.venv` directly for the test gate.

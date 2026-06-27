@@ -5,24 +5,14 @@
       "args": [
         "src/server_customer.py"
       ],
-      "cwd": "${projectDir}",
-      "env": {
-        "API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjdXN0b21lci1zZXJ2aWNlLWRldiIsImF1ZCI6ImN1c3RvbWVyLXNlcnZpY2UtYXBpIiwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6Im9yY2hlc3RyYXRvciIsImlhdCI6MTc4MjQ4NDQ5OCwiZXhwIjoxNzg1MDc2NDk4fQ.plxtvfs3JcXuhFuRNjlZO07aI9GI3cAPbulvYmr_xpM",
-        "OTP_PROVIDER": "dev",
-        "AUTH_DEV_SECRET": "customer-service-dev-secret-min-32-bytes"
-      }
+      "cwd": "${projectDir}"
     },
     "order-server": {
       "command": "python",
       "args": [
         "src/server.py"
       ],
-      "cwd": "${projectDir}",
-      "env": {
-        "API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjdXN0b21lci1zZXJ2aWNlLWRldiIsImF1ZCI6ImN1c3RvbWVyLXNlcnZpY2UtYXBpIiwic3ViIjoidGVzdC11c2VyIiwicm9sZSI6Im9yZGVyX2lucXVpcnkiLCJpYXQiOjE3ODI0ODQ0OTgsImV4cCI6MTc4NTA3NjQ5OH0.XtF57_WVzYDU4ja-IXXYbgYDe04TO0KKqVwnzHyOEJw",
-        "OTP_PROVIDER": "dev",
-        "AUTH_DEV_SECRET": "customer-service-dev-secret-min-32-bytes"
-      }
+      "cwd": "${projectDir}"
     }
   }
 }

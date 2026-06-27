@@ -28,6 +28,14 @@ def find_executable(name: str) -> str | None:
     return None
 
 
+def project_python() -> str:
+    if os.name == "nt":
+        candidate = ROOT / ".venv" / "Scripts" / "python.exe"
+    else:
+        candidate = ROOT / ".venv" / "bin" / "python"
+    return str(candidate) if candidate.exists() else sys.executable
+
+
 class Reporter:
     def __init__(self) -> None:
         self.failures = 0
@@ -50,6 +58,8 @@ def run_command(command: list[str], timeout: int = 120) -> subprocess.CompletedP
         command,
         cwd=ROOT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=timeout,
@@ -101,14 +111,14 @@ def stage_database(reporter: Reporter, check_only: bool) -> None:
     elif check_only:
         reporter.warn("data/orders.db missing; run a full init to seed it")
     else:
-        result = run_command([sys.executable, "src/seed_data.py"], timeout=120)
+        result = run_command([project_python(), "src/seed_data.py"], timeout=120)
         if result.returncode == 0:
             reporter.ok("seed_data.py complete")
         else:
             reporter.fail("seed_data.py failed")
             print(result.stdout)
 
-    alembic = ["uv", "run", "alembic", "upgrade", "head"] if find_executable("uv") else [sys.executable, "-m", "alembic", "upgrade", "head"]
+    alembic = [project_python(), "-m", "alembic", "upgrade", "head"]
     if check_only:
         reporter.ok("migration command available for full init")
         return
@@ -185,7 +195,7 @@ def stage_tests(reporter: Reporter, skip_tests: bool) -> None:
     if not (ROOT / "tests").exists():
         reporter.warn("No tests/ directory found")
         return
-    command = ["uv", "run", "pytest", "tests/", "-q"] if find_executable("uv") else [sys.executable, "-m", "pytest", "tests/", "-q"]
+    command = [project_python(), "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider"]
     result = run_command(command, timeout=240)
     print(result.stdout)
     if result.returncode == 0:

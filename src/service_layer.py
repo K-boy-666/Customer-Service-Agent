@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -52,6 +53,13 @@ RETURN_TRANSITIONS = {
     "completed": set(),
 }
 
+_NUMBER_LOCKS: dict[str, threading.Lock] = {
+    "ticket": threading.Lock(),
+    "return": threading.Lock(),
+    "survey": threading.Lock(),
+}
+_NUMBER_SEQUENCES: dict[str, int] = {}
+
 
 def _iso(dt: Any) -> str:
     if isinstance(dt, datetime):
@@ -68,7 +76,10 @@ def _next_number(session: Session, model: Any, column_name: str, prefix_name: st
     prefix = f"{prefix_name}-{today}-"
     column = getattr(model, column_name)
     row = session.query(column).filter(column.like(f"{prefix}%")).order_by(column.desc()).first()
-    seq = int(row[0].rsplit("-", 1)[-1]) + 1 if row else 1
+    db_seq = int(row[0].rsplit("-", 1)[-1]) if row else 0
+    seq_key = f"{prefix_name}-{today}"
+    seq = max(db_seq, _NUMBER_SEQUENCES.get(seq_key, 0)) + 1
+    _NUMBER_SEQUENCES[seq_key] = seq
     return f"{prefix}{seq:03d}"
 
 
@@ -337,17 +348,18 @@ def create_ticket(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Order '{order_id}' not found")
         customer_id = order.customer_id
     assert_verification_matches(verification, customer_id=customer_id, order_id=order_id)
-    ticket = Ticket(
-        ticket_number=_next_number(session, Ticket, "ticket_number", "TK"),
-        title=title,
-        description=description,
-        type=ticket_type,
-        priority=priority,
-        customer_id=customer_id,
-        order_id=order_id,
-    )
-    session.add(ticket)
-    session.flush()
+    with _NUMBER_LOCKS["ticket"]:
+        ticket = Ticket(
+            ticket_number=_next_number(session, Ticket, "ticket_number", "TK"),
+            title=title,
+            description=description,
+            type=ticket_type,
+            priority=priority,
+            customer_id=customer_id,
+            order_id=order_id,
+        )
+        session.add(ticket)
+        session.flush()
     session.add(TicketNote(ticket_id=ticket.id, content="工单已创建，等待处理。", author=actor.role))
     result = serialize_ticket(ticket)
     audit_event(session, actor, "ticket:create", "create_ticket", "ticket", str(ticket.id), after=result, request_id=request_id, idempotency_key=idempotency_key, verification_id=verification.challenge_id)
@@ -427,17 +439,18 @@ def create_return(
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Order '{order_id}' not found")
     assert_verification_matches(verification, customer_id=customer_id or order.customer_id, order_id=order_id)
-    ret = ReturnRequest(
-        return_number=_next_number(session, ReturnRequest, "return_number", "RMA"),
-        order_id=order_id,
-        customer_id=customer_id or order.customer_id,
-        type=return_type,
-        reason=reason,
-        description=description,
-        status="pending",
-    )
-    session.add(ret)
-    session.flush()
+    with _NUMBER_LOCKS["return"]:
+        ret = ReturnRequest(
+            return_number=_next_number(session, ReturnRequest, "return_number", "RMA"),
+            order_id=order_id,
+            customer_id=customer_id or order.customer_id,
+            type=return_type,
+            reason=reason,
+            description=description,
+            status="pending",
+        )
+        session.add(ret)
+        session.flush()
     result = serialize_return(ret)
     audit_event(session, actor, "return:create", "create_return", "return", str(ret.id), after=result, request_id=request_id, idempotency_key=idempotency_key, verification_id=verification.challenge_id)
     return result
@@ -508,15 +521,16 @@ def submit_survey(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Order '{order_id}' not found")
         customer_id = order.customer_id
     assert_verification_matches(verification, customer_id=customer_id, order_id=order_id)
-    survey = SatisfactionSurvey(
-        survey_number=_next_number(session, SatisfactionSurvey, "survey_number", "SAT"),
-        customer_id=customer_id,
-        order_id=order_id,
-        rating=rating,
-        feedback_text=feedback,
-    )
-    session.add(survey)
-    session.flush()
+    with _NUMBER_LOCKS["survey"]:
+        survey = SatisfactionSurvey(
+            survey_number=_next_number(session, SatisfactionSurvey, "survey_number", "SAT"),
+            customer_id=customer_id,
+            order_id=order_id,
+            rating=rating,
+            feedback_text=feedback,
+        )
+        session.add(survey)
+        session.flush()
     result = serialize_survey(survey)
     audit_event(session, actor, "survey:create", "submit_survey", "survey", str(survey.id), after=result, request_id=request_id, idempotency_key=idempotency_key, verification_id=verification.challenge_id)
     return result

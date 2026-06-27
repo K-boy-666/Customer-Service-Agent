@@ -1,0 +1,42 @@
+services:
+  api:
+    build: .
+    command: ["uv", "run", "uvicorn", "order_api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      DATABASE_URL: mysql+pymysql://customer_service:customer_service@mysql:3306/customer_service?charset=utf8mb4
+      OTP_PROVIDER: dev
+      AUTH_DEV_SECRET: customer-service-dev-secret-min-32-bytes
+      REPORT_TIMEZONE: Asia/Shanghai
+      API_BASE_URL: http://api:8000
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "uv", "run", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ready', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: customer_service
+      MYSQL_USER: customer_service
+      MYSQL_PASSWORD: customer_service
+      MYSQL_ROOT_PASSWORD: customer_service_root
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pcustomer_service_root"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql-data:

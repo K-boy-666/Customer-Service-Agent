@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 
 from starlette.testclient import TestClient
 
@@ -18,6 +19,9 @@ import database
 import seed_data
 from models import AuditEvent, ReturnRequest, SatisfactionSurvey, Ticket
 from security import Actor, create_dev_jwt
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class DailyAnalyticsTest(unittest.TestCase):
@@ -168,23 +172,31 @@ class DailyAnalyticsTest(unittest.TestCase):
 
     def test_cli_writes_markdown_report(self):
         self._seed_analytics_rows()
-        with tempfile.TemporaryDirectory(prefix="customer-report-") as output_dir:
-            script = os.path.join(os.path.dirname(os.path.dirname(__file__)), "scripts", "generate_daily_usage_report.py")
-            completed = subprocess.run(
-                [sys.executable, script, "--date", "2026-06-23", "--output-dir", output_dir],
-                check=True,
-                capture_output=True,
-                text=True,
-                env=os.environ.copy(),
-            )
-            report_path = completed.stdout.strip()
-            self.assertTrue(os.path.exists(report_path), report_path)
-            with open(report_path, encoding="utf-8") as report_file:
-                body = report_file.read()
-            self.assertIn("Daily Overview", body)
-            self.assertIn("Timezone: Asia/Shanghai", body)
-            self.assertIn("Window UTC: 2026-06-22T16:00:00 to 2026-06-23T16:00:00", body)
-            self.assertIn("Conversations: 2", body)
+        tmp_root = ROOT / ".tmp-pytest-analytics"
+        tmp_root.mkdir(exist_ok=True)
+        report = tmp_root / "2026-06-23.md"
+        if report.exists():
+            report.unlink()
+        script = os.path.join(os.path.dirname(os.path.dirname(__file__)), "scripts", "generate_daily_usage_report.py")
+        env = os.environ.copy()
+        env["TMP"] = str(tmp_root)
+        env["TEMP"] = str(tmp_root)
+        env["PYTHONPATH"] = str(ROOT / "src")
+        completed = subprocess.run(
+            [sys.executable, script, "--date", "2026-06-23", "--output-dir", str(tmp_root)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report_path = completed.stdout.strip()
+        self.assertTrue(os.path.exists(report_path), report_path)
+        with open(report_path, encoding="utf-8") as report_file:
+            body = report_file.read()
+        self.assertIn("Daily Overview", body)
+        self.assertIn("Timezone: Asia/Shanghai", body)
+        self.assertIn("Window UTC: 2026-06-22T16:00:00 to 2026-06-23T16:00:00", body)
+        self.assertIn("Conversations: 2", body)
 
 
 if __name__ == "__main__":

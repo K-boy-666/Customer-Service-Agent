@@ -19,7 +19,9 @@ from typing import Any, Callable
 
 import database
 import service_layer as svc
+from dispatcher import RuleBasedIntentDispatcher
 from kb_service import FaqRetrievalService, get_faq_retriever
+from models import ConversationStateRecord
 from security import Actor, Verification, run_idempotent
 from starlette.exceptions import HTTPException
 
@@ -83,6 +85,8 @@ class IntentAnalysis:
     confidence: float
     suggested_agent: str
     reason: str
+    evidence: list[str] = field(default_factory=list)
+    fallback_reason: str = ""
 
 
 @dataclass
@@ -126,6 +130,8 @@ class OrchestratorRun:
     agent_results: list[AgentResult]
     tool_calls: list[ToolCall] = field(default_factory=list)
     needs_human: bool = False
+    safety_notes: list[str] = field(default_factory=list)
+    handoff_package: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -139,6 +145,8 @@ class OrchestratorRun:
             "agent_results": [r.to_dict() for r in self.agent_results],
             "tool_calls": [asdict(c) for c in self.tool_calls],
             "needs_human": self.needs_human,
+            "safety_notes": self.safety_notes,
+            "handoff_package": self.handoff_package,
         }
 
 
@@ -335,12 +343,14 @@ class CustomerServiceOrchestrator:
         self,
         tools: LocalCustomerServiceTools | None = None,
         faq_retriever: FaqRetrievalService | None = None,
+        dispatcher: RuleBasedIntentDispatcher | None = None,
         actor: Actor | None = None,
         verification: Verification | None = None,
         idempotency_key: str = "",
         request_id: str = "",
     ):
         self.faq_retriever = faq_retriever
+        self.dispatcher = dispatcher or RuleBasedIntentDispatcher()
         self.tools = tools or LocalCustomerServiceTools(
             faq_retriever=faq_retriever,
             root_actor=actor,
@@ -349,6 +359,7 @@ class CustomerServiceOrchestrator:
             request_id=request_id,
         )
         self.tool_calls: list[ToolCall] = []
+        self.safety_notes: list[str] = []
 
     def handle_message(
         self,
@@ -418,6 +429,7 @@ class CustomerServiceOrchestrator:
             customer_reply = self._compose_reply(results)
             needs_human = any(result.status == "needs-escalation" for result in results)
             status = self._overall_status(results, needs_human)
+            handoff_package = self._build_handoff_package(context, intents, results, emotional_level) if needs_human else {}
 
             run = OrchestratorRun(
                 status=status,
@@ -429,6 +441,8 @@ class CustomerServiceOrchestrator:
                 agent_results=results,
                 tool_calls=self.tool_calls,
                 needs_human=needs_human,
+                safety_notes=self.safety_notes,
+                handoff_package=handoff_package,
             )
             result = run.to_dict()
             self._remember_conversation_state(context)
@@ -445,6 +459,7 @@ class CustomerServiceOrchestrator:
                 agent_results=results,
                 tool_calls=self.tool_calls,
                 needs_human=False,
+                safety_notes=self.safety_notes,
             )
             self._remember_conversation_state(context)
             self._record_usage_event(run.to_dict(), context, failure_reason=str(exc))
@@ -453,99 +468,27 @@ class CustomerServiceOrchestrator:
     def analyze_intents(
         self, context: CustomerContext, emotional_level: str
     ) -> list[IntentAnalysis]:
-        text = context.message
-        intents: list[IntentAnalysis] = []
-
-        if emotional_level == "L3":
-            return [
-                IntentAnalysis(
-                    "human_handoff",
-                    0.99,
-                    "human-handoff-agent",
-                    "Detected critical safety/legal handoff trigger.",
-                )
-            ]
-
-        rating = self._extract_rating(text)
-        if rating is not None:
-            intents.append(
-                IntentAnalysis(
-                    "satisfaction",
-                    0.95,
-                    "customer-service-orchestrator",
-                    "Customer provided an explicit satisfaction rating.",
-                )
+        dispatch = self.dispatcher.analyze(
+            context.message,
+            {
+                "customer_id": context.customer_id,
+                "order_id": context.order_id,
+                "conversation_id": context.conversation_id,
+                "emotional_level": emotional_level,
+            },
+        )
+        self.safety_notes = dispatch.safety_notes
+        return [
+            IntentAnalysis(
+                intent.intent,
+                intent.confidence,
+                intent.suggested_agent,
+                intent.reason,
+                intent.evidence,
+                intent.fallback_reason,
             )
-
-        if self._contains_any(text, L2_KEYWORDS):
-            intents.append(
-                IntentAnalysis(
-                    "complaint",
-                    0.95,
-                    "complaint-agent",
-                    "Detected complaint/escalation keyword.",
-                )
-            )
-            intents.append(
-                IntentAnalysis(
-                    "work_order",
-                    0.88,
-                    "work-order-agent",
-                    "Formal complaint should be recorded as a ticket.",
-                )
-            )
-
-        if self._contains_any(text, AFTER_SALES_KEYWORDS):
-            intents.append(
-                IntentAnalysis(
-                    "after_sales",
-                    0.9,
-                    "after-sales-agent",
-                    "Detected return/refund/exchange/troubleshooting request.",
-                )
-            )
-
-        if context.order_id or self._contains_any(text, ORDER_KEYWORDS) or TRACKING_RE.search(text):
-            intents.append(
-                IntentAnalysis(
-                    "order_inquiry",
-                    0.86,
-                    "order-inquiry-agent",
-                    "Detected order, logistics, tracking, membership, or order ID signal.",
-                )
-            )
-
-        if self._contains_any(text, WORK_ORDER_KEYWORDS):
-            intents.append(
-                IntentAnalysis(
-                    "work_order",
-                    0.82,
-                    "work-order-agent",
-                    "Detected work-order operation or ticket progress request.",
-                )
-            )
-
-        if self._contains_any(text, CONSULTATION_KEYWORDS):
-            intents.append(
-                IntentAnalysis(
-                    "consultation",
-                    0.78,
-                    "consultation-agent",
-                    "Detected policy, FAQ, or product consultation request.",
-                )
-            )
-
-        if not intents:
-            intents.append(
-                IntentAnalysis(
-                    "consultation",
-                    0.45,
-                    "consultation-agent",
-                    "No high-confidence business intent; try knowledge-base assistance first.",
-                )
-            )
-
-        return self._dedupe_intents_by_priority(intents)
+            for intent in dispatch.intents
+        ]
 
     def _handle_order_inquiry(self, context: CustomerContext) -> AgentResult:
         text = context.message
@@ -871,6 +814,26 @@ class CustomerServiceOrchestrator:
             return "needs-info"
         return "success"
 
+    def _build_handoff_package(
+        self,
+        context: CustomerContext,
+        intents: list[IntentAnalysis],
+        results: list[AgentResult],
+        emotional_level: str,
+    ) -> dict[str, Any]:
+        return {
+            "conversation_id": context.conversation_id or "",
+            "customer_id": context.customer_id,
+            "order_id": context.order_id,
+            "emotional_level": emotional_level,
+            "intents": [intent.intent for intent in intents],
+            "dispatched_agents": self._unique([result.agent for result in results]),
+            "customer_issue_summary": self._short_reason(context.message),
+            "internal_notes": [result.internal_notes for result in results if result.internal_notes],
+            "safety_notes": self.safety_notes,
+            "created_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+
     def _dedupe_intents_by_priority(
         self, intents: list[IntentAnalysis]
     ) -> list[IntentAnalysis]:
@@ -961,10 +924,25 @@ class CustomerServiceOrchestrator:
         if not conversation_id:
             return ConversationState()
         state = _CONVERSATION_STATES.get(conversation_id)
-        if state is None:
+        if state is not None:
+            _CONVERSATION_STATES.move_to_end(conversation_id)
+            return state
+        try:
+            with database.session_scope() as session:
+                row = session.get(ConversationStateRecord, conversation_id)
+                if row is None:
+                    return ConversationState()
+                state = ConversationState(
+                    customer_id=row.customer_id,
+                    order_id=row.order_id,
+                    updated_at=row.updated_at.isoformat() if row.updated_at else "",
+                )
+                _CONVERSATION_STATES[conversation_id] = state
+                _CONVERSATION_STATES.move_to_end(conversation_id)
+                return state
+        except Exception:
+            LOGGER.warning("failed to read durable conversation state", exc_info=True)
             return ConversationState()
-        _CONVERSATION_STATES.move_to_end(conversation_id)
-        return state
 
     @staticmethod
     def _remember_conversation_state(context: CustomerContext) -> None:
@@ -980,6 +958,17 @@ class CustomerServiceOrchestrator:
         _CONVERSATION_STATES.move_to_end(context.conversation_id)
         while len(_CONVERSATION_STATES) > MAX_CONVERSATION_STATES:
             _CONVERSATION_STATES.popitem(last=False)
+        try:
+            with database.session_scope() as session:
+                row = session.get(ConversationStateRecord, context.conversation_id)
+                if row is None:
+                    row = ConversationStateRecord(conversation_id=context.conversation_id)
+                    session.add(row)
+                row.customer_id = state.customer_id
+                row.order_id = state.order_id
+                row.updated_at = datetime.now()
+        except Exception:
+            LOGGER.warning("failed to persist durable conversation state", exc_info=True)
 
 
 

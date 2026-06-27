@@ -121,6 +121,43 @@ class ApiAndMigrationE2ETest(unittest.TestCase):
             )
             self.assertEqual(survey.status_code, 201, survey.text)
 
+    def test_ready_and_v2_json_write_paths(self):
+        import order_api
+
+        with TestClient(order_api.app) as client:
+            ready = client.get("/api/ready")
+            self.assertEqual(ready.status_code, 200, ready.text)
+            checks = ready.json()["checks"]
+            self.assertEqual(checks["database"]["status"], "ok")
+            self.assertEqual(checks["migrations"]["status"], "ok")
+
+            verification = self._verification(client)
+            ticket = client.post(
+                "/api/v2/tickets",
+                json={
+                    "title": "JSON API ticket",
+                    "description": "created through body payload",
+                    "customer_id": self.customer_id,
+                    "order_id": self.order_id,
+                },
+                headers=self._headers("work_order", verification, "ticket-json-key"),
+            )
+            self.assertEqual(ticket.status_code, 201, ticket.text)
+            self.assertEqual(ticket.json()["title"], "JSON API ticket")
+
+            ret = client.post(
+                "/api/v2/returns",
+                json={
+                    "order_id": self.order_id,
+                    "type": "refund",
+                    "reason": "quality",
+                    "customer_id": self.customer_id,
+                },
+                headers=self._headers("after_sales", verification, "return-json-key"),
+            )
+            self.assertEqual(ret.status_code, 201, ret.text)
+            self.assertTrue(ret.json()["return_number"].startswith("RMA-"))
+
     def test_alembic_upgrade_then_seed_on_sqlite(self):
         fd, path = tempfile.mkstemp(prefix="customer-alembic-", suffix=".db")
         os.close(fd)

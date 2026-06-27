@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from starlette import status
 from starlette.exceptions import HTTPException
 
+import config
 from models import AuditEvent, Customer, IdempotencyKey, OtpChallenge
 
 
@@ -72,6 +73,9 @@ def decode_jwt_token(token: str) -> Actor:
     jwks_url = os.getenv("OIDC_JWKS_URL", "")
     algorithms = [alg.strip() for alg in os.getenv("OIDC_ALGORITHMS", "RS256,HS256").split(",") if alg.strip()]
 
+    if config.is_production() and not jwks_url:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="oidc_jwks_required")
+
     try:
         if jwks_url:
             key = jwt.PyJWKClient(jwks_url).get_signing_key_from_jwt(token).key
@@ -92,6 +96,8 @@ def decode_jwt_token(token: str) -> Actor:
 
 
 def create_dev_jwt(subject: str, role: str, expires_minutes: int = 60) -> str:
+    if config.is_production():
+        raise RuntimeError("create_dev_jwt is disabled in production")
     now = datetime.now(timezone.utc)
     payload = {
         "iss": os.getenv("OIDC_ISSUER", "customer-service-dev"),
@@ -230,6 +236,9 @@ def request_otp(
     customer_id: int | None = None,
     order_id: str | None = None,
 ) -> dict[str, Any]:
+    if config.is_production() and os.getenv("OTP_PROVIDER", "dev").lower() in {"", "dev", "debug", "local"}:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="otp_provider_not_configured")
+
     code = f"{secrets.randbelow(1_000_000):06d}"
     challenge_id = secrets.token_urlsafe(18)
     challenge = OtpChallenge(

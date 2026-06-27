@@ -101,11 +101,18 @@ class HarnessRiskControlsTest(unittest.TestCase):
             factory.assert_called_once()
             retriever.search.assert_called_once_with("return policy", limit=3)
 
-    def test_order_server_mcp_cannot_bypass_orchestrator_verification(self):
+    def test_mcp_config_does_not_embed_static_credentials(self):
         config = json.loads((ROOT / ".claude" / "mcp.json").read_text(encoding="utf-8"))
-        order_env = config["mcpServers"]["order-server"].get("env", {})
-        self.assertNotIn("IDENTITY_VERIFICATION", order_env)
-        self.assertEqual(order_env.get("AUTH_DEV_SECRET"), "customer-service-dev-secret-min-32-bytes")
+        for name, server in config["mcpServers"].items():
+            env = server.get("env", {})
+            self.assertNotIn("IDENTITY_VERIFICATION", env, name)
+            self.assertNotIn("API_KEY", env, name)
+            self.assertNotIn("AUTH_DEV_SECRET", env, name)
+            self.assertNotIn("OTP_PROVIDER", env, name)
+
+        example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        for needle in ("DATABASE_URL", "OIDC_ISSUER", "OIDC_JWKS_URL", "OTP_PROVIDER", "REPORT_TIMEZONE", "FAQ_RAG_BACKEND"):
+            self.assertIn(needle, example)
 
     def test_order_server_scrubs_identity_verification_env(self):
         previous = os.environ.get("IDENTITY_VERIFICATION")
