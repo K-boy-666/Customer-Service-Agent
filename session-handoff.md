@@ -253,3 +253,50 @@
 **Open follow-ups**:
 - Clear locked temp directories after the OS releases them or from an elevated shell.
 - Investigate the daily analytics CLI test's subprocess temp-directory ACL behavior separately from orchestrator reliability work.
+
+---
+
+## Session: 2026-06-27 (live complaint routing check)
+
+**Branch**: `main`
+**Active feature**: None; customer-message handling verification only.
+**Outcome**: Routed a live Chinese complaint/manager-escalation message through the customer-facing Orchestrator entry point; no code changes.
+
+**What was done**:
+- Ran `.\init.cmd --check-only --skip-tests`; project usable with expected warnings for REST API not running and skipped tests.
+- Read `progress.md` and `feature_list.json`; no active blockers or in-progress features.
+- Invoked `server_customer.handle_customer_message` with the customer message via the Orchestrator role.
+
+**Verification evidence**:
+- Orchestrator MCP path returned `status=denied` with `missing_identity_verification`, so no complaint ticket or human handoff write was created.
+
+**Open follow-ups**:
+- To complete a real manager/human handoff workflow for this complaint, provide or obtain a scoped identity verification token and customer/order context.
+
+---
+
+## Session: 2026-06-27 (cold-start response optimization)
+
+**Branch**: `main`
+**Active feature**: Customer-message cold-start latency optimization.
+**Outcome**: Implemented; full regression and harness verification passed.
+
+**What was done**:
+- Added `src/api_dependencies.py` for FastAPI-only dependency helpers and removed FastAPI imports from `security.py`.
+- Switched core runtime/service exception imports to Starlette while keeping `order_api.py` as the FastAPI adapter.
+- Updated tests to assert Starlette `HTTPException`, matching the core-layer exception type.
+- Added Fast Agent Workflow guidance to use `orchestrator_mcp_tool.handle_customer_message_tool` for one-off diagnostics instead of importing full `server_customer.py`.
+
+**Verification evidence**:
+- `python -X importtime -c "import orchestrator_mcp_tool"`: filtered output showed no `fastapi`; `orchestrator_mcp_tool` cumulative import about 0.82s.
+- `Measure-Command { python -c "import orchestrator_mcp_tool" }`: 1.02s; `Measure-Command { python -c "import server_customer" }`: 3.64s.
+- Lightweight complaint probe: 0.0302s handler time, `status=denied`, `error=missing_identity_verification`.
+- Valid verification complaint probe: `status=needs-human`, `emotional_level=L2`, created 1 ticket.
+- `.\.venv\Scripts\python.exe -m pytest tests\test_orchestrator_e2e.py -q -p no:cacheprovider`: 7 passed.
+- `.\.venv\Scripts\python.exe -m pytest tests\test_security_controls.py tests\test_harness_risk_controls.py -q -p no:cacheprovider`: 17 passed.
+- `uv run pytest tests/ -q`: 42 passed, 14 subtests passed.
+- `.\init.cmd --check-only --skip-tests`: usable; warnings only for REST API not running and skipped tests.
+- Bundled Node harness validator: weighted total 100/100, all checks passed.
+
+**Open follow-ups**:
+- Full MCP server import still costs about 3.6s because FastMCP itself pulls a heavy dependency chain; optimize separately only if MCP process startup, rather than one-off diagnostics, remains user-visible.

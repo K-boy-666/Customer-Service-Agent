@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 
 import database
-from fastapi import HTTPException
 from orchestrator_api import respond_to_customer_message
 from security import Actor, load_verification
+from starlette.exceptions import HTTPException
 
 
 def handle_customer_message_tool(

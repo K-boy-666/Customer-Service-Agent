@@ -20,6 +20,7 @@ Before the conversation ends:
 - Do not run unrestricted `Get-ChildItem -Recurse` from the repository root. If PowerShell fallback search is needed, exclude `.venv`, `.git`, `.pytest_cache`, and `__pycache__`.
 - When testing Chinese customer messages in PowerShell, use UTF-8 file input or Unicode escapes. Avoid inline Chinese here-strings that can be corrupted by the console code page.
 - When diagnosing customer requests, reuse MCP or the same Python process where practical. Avoid one cold Python/FastMCP startup per message.
+- For one-off customer-message diagnostics, call `orchestrator_mcp_tool.handle_customer_message_tool` directly, or reuse an already-running MCP server. Import `server_customer.py` only when testing or running the full MCP server.
 
 ## Routing Directive (Mandatory)
 

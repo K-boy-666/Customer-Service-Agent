@@ -11,8 +11,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import jwt
-from fastapi import Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
+from starlette import status
+from starlette.exceptions import HTTPException
 
 from models import AuditEvent, Customer, IdempotencyKey, OtpChallenge
 
@@ -347,11 +348,3 @@ def customer_destination(session: Session, customer_id: int | None, channel: str
     if customer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="customer_not_found")
     return customer.email if channel == "email" else customer.phone
-
-
-async def actor_dependency(authorization: str | None = Header(None, alias="Authorization")) -> Actor:
-    return get_actor_from_authorization(authorization)
-
-
-async def request_id_dependency(request: Request) -> str:
-    return request.headers.get("X-Request-ID", "")

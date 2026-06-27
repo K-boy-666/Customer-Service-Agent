@@ -14,13 +14,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from api_dependencies import actor_dependency, request_id_dependency
 from orchestrator_api import respond_to_customer_message
 from security import (
     Actor,
-    actor_dependency,
     customer_destination,
     load_verification,
-    request_id_dependency,
     request_otp,
     require_idempotency_key,
     require_permission,

@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import HTTPException, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
+from starlette import status
+from starlette.exceptions import HTTPException
 
 from models import (
     Customer,

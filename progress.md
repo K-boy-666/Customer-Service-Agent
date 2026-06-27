@@ -81,3 +81,19 @@ $ bash init.sh
 - Verification caveats:
   - Full `.venv` pytest currently reaches 41 passed, 14 subtests passed, then fails in `DailyAnalyticsTest.test_cli_writes_markdown_report` due Windows temp-directory permission/cleanup errors.
   - `uv run pytest ...` is blocked by Windows permission errors in the uv cache/build temp directories, even with `UV_CACHE_DIR` moved into the workspace.
+
+## Cold-start optimization verification - 2026-06-27
+
+- REST-only FastAPI dependencies were moved out of `security.py` into `src/api_dependencies.py`, so the local Orchestrator tool path no longer imports FastAPI.
+- Core runtime/service modules now use Starlette `HTTPException`/status constants while `order_api.py` remains the FastAPI adapter.
+- Fast Agent Workflow now documents that one-off customer-message diagnostics should use `orchestrator_mcp_tool.handle_customer_message_tool` or a reused MCP process, not a fresh full `server_customer.py` import.
+- Verification evidence:
+  - `python -X importtime -c "import orchestrator_mcp_tool"` -> no `fastapi` import in filtered output; `orchestrator_mcp_tool` cumulative import about 0.82s in importtime output.
+  - `Measure-Command { python -c "import orchestrator_mcp_tool" }` -> 1.02s cold import; `Measure-Command { python -c "import server_customer" }` -> 3.64s full MCP import.
+  - Lightweight complaint probe via `orchestrator_mcp_tool.handle_customer_message_tool` -> 0.0302s handler time, `status=denied`, `error=missing_identity_verification`.
+  - Valid verification complaint probe -> `status=needs-human`, `emotional_level=L2`, dispatched complaint/work-order/after-sales/order agents, created 1 ticket.
+  - `.\.venv\Scripts\python.exe -m pytest tests\test_orchestrator_e2e.py -q -p no:cacheprovider` -> 7 passed.
+  - `.\.venv\Scripts\python.exe -m pytest tests\test_security_controls.py tests\test_harness_risk_controls.py -q -p no:cacheprovider` -> 17 passed.
+  - `uv run pytest tests/ -q` -> 42 passed, 14 subtests passed.
+  - `.\init.cmd --check-only --skip-tests` -> no failures; warnings only for REST API not running and tests intentionally skipped.
+  - `node scripts/harness/validate-harness.mjs` with bundled Node -> weighted total 100/100, all checks passed.

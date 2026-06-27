@@ -19,9 +19,9 @@ from typing import Any, Callable
 
 import database
 import service_layer as svc
-from fastapi import HTTPException
 from kb_service import FaqRetrievalService, get_faq_retriever
 from security import Actor, Verification, run_idempotent
+from starlette.exceptions import HTTPException
 
 
 LOGGER = logging.getLogger(__name__)
