@@ -1,0 +1,38 @@
+# Production overlay — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Requires a .env file (gitignored) or real environment variables for:
+#   MYSQL_PASSWORD, MYSQL_ROOT_PASSWORD, OTP_PROVIDER, OIDC_JWKS_URL,
+#   AUTH_DEV_SECRET (or AUTH_DEV_SECRET_FILE), GRAFANA_ADMIN_PASSWORD
+
+services:
+  api:
+    environment:
+      APP_ENV: production
+      DATABASE_URL: mysql+pymysql://customer_service:${MYSQL_PASSWORD}@mysql:3306/customer_service?charset=utf8mb4
+      OTP_PROVIDER: ${OTP_PROVIDER}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+      AUTH_DEV_SECRET_FILE: /run/secrets/auth_dev_secret
+      DB_POOL_SIZE: "10"
+      DB_MAX_OVERFLOW: "20"
+      DB_POOL_RECYCLE: "3600"
+      DB_POOL_TIMEOUT: "30"
+      API_BASE_URL: http://api:8000
+    secrets:
+      - auth_dev_secret
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1g
+
+  mysql:
+    environment:
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    restart: unless-stopped
+
+secrets:
+  auth_dev_secret:
+    file: ./secrets/auth_dev_secret

@@ -1,0 +1,59 @@
+{
+  "annotations": {"list": []},
+  "title": "Customer Service Agent 2.0",
+  "uid": "customer-service",
+  "version": 1,
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "title": "Conversations Total",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "customer_service_conversations_total", "refId": "A"}]
+    },
+    {
+      "title": "Human Handoffs Total",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "customer_service_handoffs_total", "refId": "A"}]
+    },
+    {
+      "title": "Tickets",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "customer_service_tickets_total", "refId": "A"}]
+    },
+    {
+      "title": "Returns",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "customer_service_returns_total", "refId": "A"}]
+    },
+    {
+      "title": "API P95 Latency",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P95",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Handoff Rate",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        {
+          "expr": "sum(customer_service_handoffs_total) / clamp_min(sum(customer_service_conversations_total), 1)",
+          "legendFormat": "Rate",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

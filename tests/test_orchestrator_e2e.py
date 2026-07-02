@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import database
 import seed_data
 from models import CustomerServiceUsageEvent, Order, ReturnRequest, SatisfactionSurvey, Ticket
-from orchestrator_runtime import CustomerServiceOrchestrator, _CONVERSATION_STATES
+from orchestrator_runtime import _CONVERSATION_STATES, CustomerServiceOrchestrator
 from security import Actor, create_dev_jwt, load_verification, request_otp, verify_otp
 
 
@@ -299,4 +299,3 @@ class OrchestratorE2ETest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

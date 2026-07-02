@@ -13,6 +13,16 @@ RUN uv sync --frozen --no-dev
 
 COPY . .
 
+# Install entrypoint script (needs root for /usr/local/bin).
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Create a non-root user and ensure writable directories.
+RUN useradd -m app && \
+    mkdir -p /app/data /app/backups && \
+    chown -R app:app /app
+USER app
+
 EXPOSE 8000
 
-CMD ["uv", "run", "uvicorn", "order_api:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["docker-entrypoint.sh"]

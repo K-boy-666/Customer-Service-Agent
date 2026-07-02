@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -141,8 +141,14 @@ def get_usage_analytics(session: Session, actor: Actor, report_date: str | date 
         .all()
     )
     tickets = session.query(Ticket).filter(Ticket.created_at >= start, Ticket.created_at < end).all()
-    returns = session.query(ReturnRequest).filter(ReturnRequest.created_at >= start, ReturnRequest.created_at < end).all()
-    surveys = session.query(SatisfactionSurvey).filter(SatisfactionSurvey.created_at >= start, SatisfactionSurvey.created_at < end).all()
+    returns = (
+        session.query(ReturnRequest).filter(ReturnRequest.created_at >= start, ReturnRequest.created_at < end).all()
+    )
+    surveys = (
+        session.query(SatisfactionSurvey)
+        .filter(SatisfactionSurvey.created_at >= start, SatisfactionSurvey.created_at < end)
+        .all()
+    )
     audit_events = session.query(AuditEvent).filter(AuditEvent.created_at >= start, AuditEvent.created_at < end).all()
     low_score_followups = (
         session.query(Ticket)
@@ -173,13 +179,16 @@ def get_usage_analytics(session: Session, actor: Actor, report_date: str | date 
 
     ratings = [survey.rating for survey in surveys]
     audit_failures = [event for event in audit_events if event.result != "success"]
+    needs_human_count = sum(1 for event in events if event.needs_human)
     usage = {
         "total_conversations": len(events),
         "unique_customers": len({event.customer_id for event in events if event.customer_id is not None}),
         "status_counts": _counter_dict([event.status for event in events]),
         "emotional_level_counts": _counter_dict([event.emotional_level for event in events]),
-        "needs_human_count": sum(1 for event in events if event.needs_human),
-        "average_message_length": round(sum(event.message_length for event in events) / len(events), 1) if events else 0,
+        "needs_human_count": needs_human_count,
+        "average_message_length": round(sum(event.message_length for event in events) / len(events), 1)
+        if events
+        else 0,
     }
     routing = {
         "intent_counts": _counter_dict(intent_names),
@@ -200,7 +209,7 @@ def get_usage_analytics(session: Session, actor: Actor, report_date: str | date 
         "low_score_followup_tickets": low_score_followups,
     }
     quality = {
-        "escalation_rate": round(usage["needs_human_count"] / len(events), 4) if events else 0,
+        "escalation_rate": round(needs_human_count / len(events), 4) if events else 0,
         "failed_tool_call_count": len(failed_tools),
         "audit_failure_count": len(audit_failures),
         "audit_failures_by_permission": _counter_dict([event.permission for event in audit_failures]),
@@ -227,19 +236,32 @@ def build_recommendations(
 ) -> list[str]:
     recommendations: list[str] = []
     if usage["total_conversations"] == 0:
-        return ["No customer-service usage was recorded for this date; verify traffic capture and scheduled runtime health."]
+        return [
+            "No customer-service usage was recorded for this date; verify traffic capture and scheduled runtime health."
+        ]
     if usage["needs_human_count"]:
-        recommendations.append("Review escalated conversations and confirm handoff reasons are covered by current routing guidance.")
+        recommendations.append(
+            "Review escalated conversations and confirm handoff reasons are covered by current routing guidance."
+        )
     if quality["failed_tool_call_count"]:
-        recommendations.append("Investigate failed tool calls before the next business day to avoid repeated customer-facing partial resolutions.")
+        recommendations.append(
+            "Investigate failed tool calls before the next business day to avoid "
+            "repeated customer-facing partial resolutions."
+        )
     if operations["low_rating_count"]:
-        recommendations.append("Review low satisfaction ratings and ensure follow-up tickets are assigned and progressing.")
+        recommendations.append(
+            "Review low satisfaction ratings and ensure follow-up tickets are assigned and progressing."
+        )
     top_agents = routing.get("sub_agent_counts") or {}
     if top_agents:
-        busiest = max(top_agents, key=top_agents.get)
-        recommendations.append(f"Inspect {busiest} prompts and tool paths; it handled the highest share of routed work.")
+        busiest = max(top_agents, key=lambda k: top_agents.get(k, 0))
+        recommendations.append(
+            f"Inspect {busiest} prompts and tool paths; it handled the highest share of routed work."
+        )
     if not recommendations:
-        recommendations.append("No major quality issues detected; continue monitoring routing mix and satisfaction trends.")
+        recommendations.append(
+            "No major quality issues detected; continue monitoring routing mix and satisfaction trends."
+        )
     return recommendations
 
 
@@ -249,7 +271,10 @@ def render_markdown_report(analytics: dict[str, Any]) -> str:
         "",
         f"Generated at: {analytics['generated_at']} UTC",
         f"Timezone: {analytics.get('timezone', 'UTC')}",
-        f"Window UTC: {analytics.get('window', {}).get('start_utc', analytics.get('window', {}).get('start', ''))} to {analytics.get('window', {}).get('end_utc', analytics.get('window', {}).get('end', ''))}",
+        (
+            f"Window UTC: {analytics.get('window', {}).get('start_utc', analytics.get('window', {}).get('start', ''))}"
+            f" to {analytics.get('window', {}).get('end_utc', analytics.get('window', {}).get('end', ''))}"
+        ),
         "",
         "## Daily Overview",
         f"- Conversations: {analytics['usage']['total_conversations']}",
@@ -271,7 +296,7 @@ def render_markdown_report(analytics: dict[str, Any]) -> str:
         f"- Returns created: {analytics['operations']['returns_created']}",
         f"- Returns by status: {_format_counts(analytics['operations']['returns_by_status'])}",
         f"- Surveys submitted: {analytics['operations']['surveys_submitted']}",
-        f"- Average rating: {analytics['operations']['average_rating'] if analytics['operations']['average_rating'] is not None else 'n/a'}",
+        f"- Average rating: {analytics['operations']['average_rating'] or 'n/a'}",
         f"- Low ratings: {analytics['operations']['low_rating_count']}",
         f"- Low-score follow-up tickets: {analytics['operations']['low_score_followup_tickets']}",
         "",
@@ -279,14 +304,19 @@ def render_markdown_report(analytics: dict[str, Any]) -> str:
         f"- Escalation rate: {analytics['quality_signals']['escalation_rate']}",
         f"- Failed tool calls: {analytics['quality_signals']['failed_tool_call_count']}",
         f"- Audit failures: {analytics['quality_signals']['audit_failure_count']}",
-        f"- Audit failures by permission: {_format_counts(analytics['quality_signals']['audit_failures_by_permission'])}",
+        (
+            f"- Audit failures by permission: "
+            f"{_format_counts(analytics['quality_signals']['audit_failures_by_permission'])}"
+        ),
         "",
         "## Recommendations",
     ]
     lines.extend(f"- {item}" for item in analytics["recommendations"])
     if analytics["routing"]["failed_tools"]:
         lines.extend(["", "## Failed Tool Samples"])
-        lines.extend(f"- {item['tool']} ({item['status']}): {item['summary']}" for item in analytics["routing"]["failed_tools"])
+        lines.extend(
+            f"- {item['tool']} ({item['status']}): {item['summary']}" for item in analytics["routing"]["failed_tools"]
+        )
     return "\n".join(lines) + "\n"
 
 

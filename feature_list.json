@@ -115,22 +115,93 @@
         "update_return_status advances through lifecycle"
       ],
       "verified_by": "tests/test_scenario3_return.py"
+    },
+    "production-deployment": {
+      "title": "Production deployment hardening (P1)",
+      "status": "done",
+      "description": "MySQL migration (sequence adapter + connection pool + prod compose), secrets management (_FILE support + rotation runbook), monitoring (histogram metrics + Prometheus/Grafana/Alertmanager stack), CI/CD (lint + test matrix + migration smoke + GHCR build-push)",
+      "depends_on": ["mcp-integrations", "ticket-lifecycle", "return-workflow"],
+      "done_criteria": [
+        "Multi-process safe number generation via dialect-aware sequencer (InProcess for SQLite, MysqlCounter for MySQL)",
+        "MySQL connection pool configured (pool_recycle=3600, pool_size/max_overflow env-tunable)",
+        "Production compose overlay (docker-compose.prod.yml) with APP_ENV=production and Docker secrets",
+        "Startup migration via docker-entrypoint.sh (alembic upgrade head before uvicorn)",
+        "Secret rotation runbook documented (JWT/OIDC, AUTH_DEV_SECRET, MySQL password)",
+        "Request latency histogram in /api/metrics + Prometheus/Grafana/Alertmanager monitoring stack",
+        "CI pipeline: ruff lint + Python 3.10/3.11/3.12 test matrix + MySQL 8.4 migration smoke",
+        "CD pipeline: build-push to GHCR on main/tag"
+      ],
+      "verified_by": "tests/test_production_hardening.py, .github/workflows/ci.yml, .github/workflows/release.yml"
+    },
+    "concurrency-load-testing": {
+      "title": "Multi-agent concurrency and load testing (P2)",
+      "status": "done",
+      "description": "Fixed 3 concurrency bugs (OrderedDict race, SQLite no-WAL, idempotency TOCTOU) and established 3-layer concurrency test system (L1 integration / L2 API / L3 load script)",
+      "depends_on": ["production-deployment"],
+      "done_criteria": [
+        "_CONVERSATION_STATES protected by RLock with double-checked locking (DB I/O outside lock)",
+        "SQLite WAL mode + busy_timeout=5000 + synchronous=NORMAL via event listener",
+        "run_idempotent handles IntegrityError on concurrent insert (rollback + return cached)",
+        "18 concurrency tests pass (isolation + numbering + idempotency + WAL)",
+        "4 load tests pass (P95 < 2s, QPS > 0, tail latency < 5s, no state leak)",
+        "Standalone load script (scripts/loadtest/load_orchestrator.py) with QPS/P50/P95/P99 output"
+      ],
+      "verified_by": "tests/test_concurrency_isolation.py, tests/test_concurrency_numbering.py, tests/test_concurrency_idempotency.py, tests/test_concurrency_sqlite_wal.py, tests/test_load_orchestrator.py"
+    },
+    "ci-tooling-hardening": {
+      "title": "CI & tooling hardening (P3 Phase A)",
+      "status": "done",
+      "description": "Coverage tracking, dependency audit, full table migration smoke test, readiness probe fix, OpenAPI docs, exception narrowing, load test CI governance",
+      "depends_on": ["concurrency-load-testing"],
+      "done_criteria": [
+        "pytest-cov configured with branch coverage, fail_under=60, actual coverage >74%",
+        "pip-audit CI job scanning dependencies for known vulnerabilities",
+        "migration-smoke verifies all 15 tables from Base.metadata (was 4/15)",
+        "/api/ready returns HTTP 503 when degraded (was 200), no inspect() table introspection",
+        "OpenAPI docs with title/description/8 tags, production disables docs_url",
+        "4 bare-except narrowed: 3 to SQLAlchemyError, 1 to (OSError, ImportError, RuntimeError)",
+        "CI test job uses -m 'not load', separate non-blocking load-test job",
+        "test_ready_returns_503_when_db_down passes"
+      ],
+      "verified_by": "tests/test_api_and_migration_e2e.py::test_ready_returns_503_when_db_down, .github/workflows/ci.yml"
+    },
+    "structured-logging-rate-limiting": {
+      "title": "Structured logging (structlog) + API rate limiting (slowapi) (P4 Phase B)",
+      "status": "done",
+      "description": "structlog 26.x with ProcessorFormatter stdlib bridge (JSON prod / colored dev), contextvars request_id binding via pure ASGI middleware, slowapi per-route rate limiting (OTP 5/min, orchestrator 60/min, write 30/min, read 120/min) with env-driven config",
+      "depends_on": ["ci-tooling-hardening"],
+      "done_criteria": [
+        "structlog configured with ProcessorFormatter bridging stdlib logging",
+        "Production outputs JSON, development outputs colored console",
+        "Pure ASGI middleware binds request_id/method/path/status_code/duration to contextvars",
+        "Existing LOGGER.warning calls in orchestrator_runtime.py automatically include request_id",
+        "MCP server logs to stderr (stdout reserved for JSON-RPC protocol)",
+        "29 routes have @limiter.limit() decorators with request: Request parameter",
+        "Health endpoints excluded from rate limiting",
+        "Rate limit values configurable via RATE_LIMIT_* env vars",
+        "Tests pass with RATE_LIMIT_ENABLED=false default; rate limit tests in dedicated file"
+      ],
+      "verified_by": "tests/test_structlog_rate_limit.py"
+    },
+    "prometheus-client-xdist": {
+      "title": "prometheus_client migration + pytest-xdist parallel tests (P5 Phase C)",
+      "status": "done",
+      "description": "Replaced custom MetricsRegistry with prometheus_client standard types (Histogram + Gauge with multiprocess mode support), /api/metrics outputs standard exposition format; added pytest-xdist with --dist=loadscope for 5x test speedup",
+      "depends_on": ["structured-logging-rate-limiting"],
+      "done_criteria": [
+        "prometheus_client replaces custom MetricsRegistry with standard Counter/Gauge/Histogram types",
+        "/api/metrics returns generate_latest() with CONTENT_TYPE_LATEST header",
+        "Multi-process mode supported via PROMETHEUS_MULTIPROC_DIR env var",
+        "record_request(route, start_time) function signature unchanged (request_logging.py unmodified)",
+        "pytest-xdist with -n auto --dist=loadscope runs all tests in parallel",
+        "Test suite runtime reduced from ~63s to ~13s (5x speedup)",
+        "Load tests remain serial (not affected by xdist)",
+        "No test files or conftest.py modified for xdist (process-level isolation)"
+      ],
+      "verified_by": "tests/test_metrics_prometheus.py, tests/test_production_hardening.py::ProductionHardeningTest::test_metrics_includes_histogram"
     }
   },
-  "planned": [
-    {
-      "id": "production-deployment",
-      "title": "Production deployment hardening",
-      "description": "MySQL migration, secrets management, monitoring, CI/CD pipeline",
-      "priority": "P1"
-    },
-    {
-      "id": "load-testing",
-      "title": "Multi-agent concurrency and load testing",
-      "description": "Verify orchestrator behavior under parallel customer sessions",
-      "priority": "P2"
-    }
-  ],
+  "planned": [],
   "completed_order": [
     "core-orchestration",
     "mcp-integrations",
@@ -140,6 +211,11 @@
     "satisfaction-survey",
     "customer-verification",
     "rag-knowledge-base",
-    "analytics-telemetry"
+    "analytics-telemetry",
+    "production-deployment",
+    "concurrency-load-testing",
+    "ci-tooling-hardening",
+    "structured-logging-rate-limiting",
+    "prometheus-client-xdist"
   ]
 }

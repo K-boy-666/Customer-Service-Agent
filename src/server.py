@@ -112,9 +112,7 @@ async def list_orders(status: str = "all", limit: int = 20, offset: int = 0) -> 
         "title": "Get orders by date range",
     },
 )
-async def get_orders_by_date(
-    start_date: str, end_date: str, limit: int = 50
-) -> str:
+async def get_orders_by_date(start_date: str, end_date: str, limit: int = 50) -> str:
     """Get orders created within a date range.  Dates must be ISO format
     (YYYY-MM-DD, e.g. "2026-01-01").  The range is inclusive.
 
@@ -214,10 +212,7 @@ async def track_by_number(tracking_number: str) -> str:
     """
     shipment = await api_client.track_by_number(tracking_number)
     if shipment is None:
-        return (
-            f"Tracking number '{tracking_number}' not found. "
-            "Please verify the number and try again."
-        )
+        return f"Tracking number '{tracking_number}' not found. Please verify the number and try again."
     return json.dumps(shipment, ensure_ascii=False, indent=2)
 
 
@@ -244,8 +239,7 @@ async def get_customer(customer_id: str) -> str:
     customer = await api_client.get_customer(customer_id)
     if customer is None:
         return (
-            f"Customer '{customer_id}' not found. "
-            "Use search_customers to find the customer by name, email, or phone."
+            f"Customer '{customer_id}' not found. Use search_customers to find the customer by name, email, or phone."
         )
     return json.dumps(customer, ensure_ascii=False, indent=2)
 

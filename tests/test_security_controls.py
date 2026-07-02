@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import database
 import seed_data
 import service_layer as svc
-from models import AuditEvent, Order
+from models import Order
 from security import (
     Actor,
     create_dev_jwt,
@@ -111,7 +111,9 @@ class SecurityControlsTest(unittest.TestCase):
             for action in (
                 lambda: svc.get_order(session, actor, order.id, verification),
                 lambda: svc.get_customer(session, actor, order.customer_id, verification),
-                lambda: svc.create_return(session, after_sales, order.id, "refund", "quality", "", order.customer_id, verification),
+                lambda: svc.create_return(
+                    session, after_sales, order.id, "refund", "quality", "", order.customer_id, verification
+                ),
             ):
                 with self.assertRaises(HTTPException) as cm:
                     action()
@@ -166,9 +168,20 @@ class SecurityControlsTest(unittest.TestCase):
         try:
             order = session.query(Order).filter_by(status="delivered").first()
             verification = self._verified(session, order)
-            ret = svc.create_return(session, Actor("agent", "after_sales", {}), order.id, "return", "测试", "", order.customer_id, verification)
+            ret = svc.create_return(
+                session,
+                Actor("agent", "after_sales", {}),
+                order.id,
+                "return",
+                "测试",
+                "",
+                order.customer_id,
+                verification,
+            )
             with self.assertRaises(HTTPException) as cm:
-                svc.update_return_status(session, Actor("agent", "after_sales", {}), ret["id"], "completed", verification=verification)
+                svc.update_return_status(
+                    session, Actor("agent", "after_sales", {}), ret["id"], "completed", verification=verification
+                )
             self.assertEqual(cm.exception.status_code, 409)
         finally:
             session.close()

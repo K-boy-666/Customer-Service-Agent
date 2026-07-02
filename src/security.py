@@ -6,18 +6,20 @@ import hashlib
 import json
 import os
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any
 
 import jwt
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette import status
 from starlette.exceptions import HTTPException
 
 import config
+from config import _read_secret
 from models import AuditEvent, Customer, IdempotencyKey, OtpChallenge
-
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "admin": {"*"},
@@ -31,7 +33,16 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "data_analysis": {"analytics:read"},
 }
 
-READ_PERMISSIONS = {"order:read", "shipment:read", "customer:read", "faq:read", "ticket:read", "return:read", "survey:read", "analytics:read"}
+READ_PERMISSIONS = {
+    "order:read",
+    "shipment:read",
+    "customer:read",
+    "faq:read",
+    "ticket:read",
+    "return:read",
+    "survey:read",
+    "analytics:read",
+}
 
 
 @dataclass(frozen=True)
@@ -57,13 +68,14 @@ def has_permission(role: str, permission: str) -> bool:
 
 def require_permission(actor: Actor, permission: str) -> None:
     if not has_permission(actor.role, permission):
+        detail: Any = {
+            "error": "permission_denied",
+            "role": actor.role,
+            "permission": permission,
+        }
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "permission_denied",
-                "role": actor.role,
-                "permission": permission,
-            },
+            detail=detail,
         )
 
 
@@ -81,7 +93,7 @@ def decode_jwt_token(token: str) -> Actor:
             key = jwt.PyJWKClient(jwks_url).get_signing_key_from_jwt(token).key
             claims = jwt.decode(token, key=key, algorithms=algorithms, audience=audience, issuer=issuer)
         else:
-            secret = os.getenv("AUTH_DEV_SECRET", "customer-service-dev-secret-min-32-bytes")
+            secret = _read_secret("AUTH_DEV_SECRET", os.environ) or config.DEV_AUTH_SECRET
             claims = jwt.decode(token, key=secret, algorithms=["HS256"], audience=audience, issuer=issuer)
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"invalid_token: {exc}") from exc
@@ -107,7 +119,7 @@ def create_dev_jwt(subject: str, role: str, expires_minutes: int = 60) -> str:
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=expires_minutes)).timestamp()),
     }
-    return jwt.encode(payload, os.getenv("AUTH_DEV_SECRET", "customer-service-dev-secret-min-32-bytes"), algorithm="HS256")
+    return jwt.encode(payload, _read_secret("AUTH_DEV_SECRET", os.environ) or config.DEV_AUTH_SECRET, algorithm="HS256")
 
 
 def utcnow() -> datetime:
@@ -204,27 +216,42 @@ def run_idempotent(
 ) -> tuple[dict[str, Any], int, bool]:
     digest = request_hash(payload)
     existing = (
-        session.query(IdempotencyKey)
-        .filter_by(actor_subject=actor.subject, endpoint=endpoint, key=key)
-        .one_or_none()
+        session.query(IdempotencyKey).filter_by(actor_subject=actor.subject, endpoint=endpoint, key=key).one_or_none()
     )
     if existing:
         if existing.request_hash != digest:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="idempotency_key_payload_conflict")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="idempotency_key_payload_conflict",
+            ) from None
         return existing.response_json, existing.status_code, True
 
     response, status_code = operation()
-    session.add(
-        IdempotencyKey(
-            key=key,
-            actor_subject=actor.subject,
-            endpoint=endpoint,
-            request_hash=digest,
-            response_json=response,
-            status_code=status_code,
+    try:
+        session.add(
+            IdempotencyKey(
+                key=key,
+                actor_subject=actor.subject,
+                endpoint=endpoint,
+                request_hash=digest,
+                response_json=response,
+                status_code=status_code,
+            )
         )
-    )
-    session.flush()
+        session.flush()
+    except IntegrityError:
+        # Concurrent request won the race: rollback our business writes
+        # (the winner already wrote equivalent records) and return cached result.
+        session.rollback()
+        existing = (
+            session.query(IdempotencyKey).filter_by(actor_subject=actor.subject, endpoint=endpoint, key=key).one()
+        )
+        if existing.request_hash != digest:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="idempotency_key_payload_conflict",
+            ) from None
+        return existing.response_json, existing.status_code, True
     return response, status_code, False
 
 
@@ -261,7 +288,11 @@ def request_otp(
         "/api/auth/otp/request",
         "otp_challenge",
         challenge_id,
-        after={"purpose": purpose, "channel": channel, "destination": mask_email(destination) if "@" in destination else mask_phone(destination)},
+        after={
+            "purpose": purpose,
+            "channel": channel,
+            "destination": mask_email(destination) if "@" in destination else mask_phone(destination),
+        },
         result="success",
     )
     response = {"challenge_id": challenge_id, "expires_at": challenge.expires_at.isoformat()}
@@ -345,7 +376,6 @@ def assert_verification_matches(
 
     if order_id is not None and verification.customer_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="verification_customer_scope_required")
-
 
 
 def customer_destination(session: Session, customer_id: int | None, channel: str, destination: str | None) -> str:

@@ -1,4 +1,4 @@
-﻿"""SQLAlchemy ORM models for the customer-service platform."""
+"""SQLAlchemy ORM models for the customer-service platform."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ class Customer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
 
-    orders: Mapped[list["Order"]] = relationship(back_populates="customer")
+    orders: Mapped[list[Order]] = relationship(back_populates="customer")
 
 
 class Product(Base):
@@ -66,8 +66,8 @@ class Order(Base):
     updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
 
     customer: Mapped[Customer] = relationship(back_populates="orders")
-    items: Mapped[list["OrderItem"]] = relationship(back_populates="order", cascade="all, delete-orphan")
-    shipment: Mapped["Shipment | None"] = relationship(back_populates="order", cascade="all, delete-orphan")
+    items: Mapped[list[OrderItem]] = relationship(back_populates="order", cascade="all, delete-orphan")
+    shipment: Mapped[Shipment | None] = relationship(back_populates="order", cascade="all, delete-orphan")
 
 
 class OrderItem(Base):
@@ -96,7 +96,7 @@ class Shipment(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
 
     order: Mapped[Order] = relationship(back_populates="shipment")
-    events: Mapped[list["ShipmentEvent"]] = relationship(back_populates="shipment", cascade="all, delete-orphan")
+    events: Mapped[list[ShipmentEvent]] = relationship(back_populates="shipment", cascade="all, delete-orphan")
 
 
 class ShipmentEvent(Base):
@@ -129,7 +129,7 @@ class Ticket(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
 
-    notes: Mapped[list["TicketNote"]] = relationship(back_populates="ticket", cascade="all, delete-orphan")
+    notes: Mapped[list[TicketNote]] = relationship(back_populates="ticket", cascade="all, delete-orphan")
 
 
 class TicketNote(Base):
@@ -170,6 +170,7 @@ class SatisfactionSurvey(Base):
     rating: Mapped[int] = mapped_column(Integer, nullable=False)
     feedback_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+
 
 class CustomerServiceUsageEvent(Base):
     __tablename__ = "customer_service_usage_events"
@@ -247,4 +248,3 @@ class OtpChallenge(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
-

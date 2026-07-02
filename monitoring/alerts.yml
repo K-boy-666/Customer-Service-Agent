@@ -1,0 +1,29 @@
+groups:
+  - name: customer-service
+    rules:
+      - alert: ApiDown
+        expr: up{job="customer-service-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Customer service API is down"
+          description: "Prometheus cannot scrape the API at {{ $labels.instance }}"
+
+      - alert: HighHandoffRate
+        expr: sum(customer_service_handoffs_total) / clamp_min(sum(customer_service_conversations_total), 1) > 0.3
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High human handoff rate"
+          description: "More than 30% of conversations require human handoff"
+
+      - alert: HighApiLatencyP95
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency (P95 > 2s)"
+          description: "P95 request latency exceeds 2 seconds"

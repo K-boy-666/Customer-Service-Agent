@@ -1,4 +1,4 @@
-﻿"""
+"""
 MCP server for customer-service operations.
 
 Exposes 12 tools across three domains:
@@ -11,8 +11,8 @@ Requires: the REST API at localhost:8000 and faq.json in the same directory.
 """
 
 import json
-import os
 from pathlib import Path
+from typing import Any
 
 from fastmcp import FastMCP
 
@@ -39,6 +39,7 @@ def _get_faq_retriever():
 def _get_faq_categories() -> list[str]:
     """Return FAQ category names from the lazy retriever."""
     return [row["category"] for row in _get_faq_retriever().categories()]
+
 
 # ---------------------------------------------------------------------------
 # Server
@@ -200,7 +201,7 @@ async def create_ticket(
 
     Returns the created ticket with its ticket_number.
     """
-    params = {
+    params: dict[str, Any] = {
         "title": title,
         "type": type,
         "priority": priority,
@@ -255,7 +256,7 @@ async def list_tickets(
         limit: Max results per page (default 20).
         offset: Pagination offset (0-based).
     """
-    params = {"limit": limit, "offset": offset}
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
     if status:
         params["status"] = status
     if assignee:
@@ -362,7 +363,7 @@ async def create_return(
 
     Returns the created return request with its return_number (RMA format).
     """
-    params = {
+    params: dict[str, Any] = {
         "order_id": order_id,
         "reason": reason,
         "type": type,
@@ -416,7 +417,7 @@ async def list_returns(
         limit: Max results per page (default 20).
         offset: Pagination offset (0-based).
     """
-    params = {"limit": limit, "offset": offset}
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
     if status:
         params["status"] = status
     if customer_id:
@@ -535,6 +536,8 @@ async def generate_daily_usage_report(date: str = "yesterday", output_dir: str =
     data = await api_client.get_usage_analytics(date)
     path = analytics_service.write_markdown_report(data, output_dir)
     return json.dumps({"date": data["date"], "report_path": str(path)}, ensure_ascii=False, indent=2)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -542,9 +545,17 @@ async def generate_daily_usage_report(date: str = "yesterday", output_dir: str =
 
 def main():
     """Run the MCP server over stdio (default for Claude Code)."""
+    import config as runtime_config
+    from log_config import configure_logging
+
+    _cfg = runtime_config.load_runtime_config()
+    configure_logging(
+        log_level=_cfg.log_level,
+        json_logs=_cfg.log_json,
+        log_to_stderr=True,
+    )
     mcp.run()
 
 
 if __name__ == "__main__":
     main()
-

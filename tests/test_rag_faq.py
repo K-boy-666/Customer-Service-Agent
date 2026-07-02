@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from kb_service import FaqRetrievalService
 from orchestrator_runtime import CustomerServiceOrchestrator, LocalCustomerServiceTools
 
-
 FAQ_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "faq.json")
 
 

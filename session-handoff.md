@@ -328,3 +328,156 @@
 - Raw `uv run pytest tests/ -q` remains blocked by Windows/OneDrive uv cache/editable-build ACL errors in this environment; init now avoids that path by using `.venv`.
 - Multi-process numbering should eventually move from in-process sequence guards to a DB-native sequence/counter adapter before horizontal API scaling.
 - External OTP, OIDC/JWKS, analytics webhook/email, and true LLM/RAG dispatcher providers still need real credentials/provider adapters for production rollout.
+
+---
+
+## Session: 2026-06-30 (P1 production deployment hardening)
+
+**Branch**: `main`
+**Active feature**: Production deployment hardening (P1) — MySQL migration, secrets management, monitoring, CI/CD.
+**Outcome**: Implemented all four P1 domains; full regression and harness verification passed.
+
+**What was done**:
+- **MySQL migration**: Created `src/numbering.py` with dialect-aware sequencer (`InProcessSequencer` for SQLite, `MysqlCounterSequencer` for MySQL using `LAST_INSERT_ID` atomic increment). Added migration `0004_sequence_counters`. Refactored `service_layer.py` three call sites. Configured MySQL connection pool (`pool_recycle=3600`, `pool_size=10`, `max_overflow=20`, env-tunable).
+- **Startup migration fix**: `order_api.py` lifespan now skips `init_db()`/seed in production. Added `docker-entrypoint.sh` (`alembic upgrade head` → uvicorn). Dockerfile updated with ENTRYPOINT + non-root user.
+- **Secrets management**: Added `_read_secret()` supporting `_FILE` suffix in `config.py`/`security.py`. Created `docker-compose.prod.yml` with Docker secrets. Rotation runbook in ADR-0006.
+- **Monitoring**: Created `src/metrics.py` with request latency histogram. Added Prometheus + Grafana + Alertmanager stack (`docker-compose.monitoring.yml`, `monitoring/` configs). Alert rules: ApiDown, HighHandoffRate, HighApiLatencyP95.
+- **CI/CD**: Added ruff/mypy config to `pyproject.toml`. Cleaned all code via `ruff check --fix` + `ruff format`. Created `ci.yml` (lint + Python 3.10/3.11/3.12 test matrix + MySQL 8.4 migration smoke) and `release.yml` (GHCR build-push).
+- Created ADR-0006 (secrets and deployment) and ADR-0007 (database numbering adapter).
+- Updated `feature_list.json`: `production-deployment` moved from planned to features with status=done.
+
+**Verification evidence**:
+- `.\.venv\Scripts\python.exe -m pytest tests\ -q -p no:cacheprovider`: 52 passed, 14 subtests passed.
+- `.\.venv\Scripts\ruff.exe check src tests`: All checks passed.
+- `.\.venv\Scripts\ruff.exe format --check src tests`: All files formatted.
+- `.\init.cmd --check-only --skip-tests`: no failures.
+- `node scripts/harness/validate-harness.mjs`: 100/100, no new warnings.
+
+**Open follow-ups**:
+- mypy has 12 pre-existing type errors (non-blocking in CI with `continue-on-error`); cleanup tracked separately.
+- MySQL 8.4 migration smoke test runs in CI but has not been validated locally (no local MySQL).
+- Remote SSH deployment (via `appleboy/ssh-action`) listed as optional future extension.
+- Existing DB count metrics use gauge semantics labeled as counter; histogram migration to `prometheus_client` listed as future optimization.
+
+---
+
+## Session: 2026-07-01 (mypy cleanup + P2 concurrency and load testing)
+
+**Branch**: `main`
+**Active feature**: mypy 12 errors fixed, then P2 multi-agent concurrency and load testing.
+**Outcome**: All 12 mypy errors resolved (CI mypy now blocking); 3 concurrency bugs fixed; 22 new test cases; full regression and harness verification passed.
+
+**What was done**:
+- **mypy cleanup**: Fixed 12 type errors across 5 files (kb_service.py None.strip(), seed_data.py list annotations, analytics_service.py dict mixed types + max key, security.py HTTPException detail cast, server_customer.py params dict[str, Any]). Removed `continue-on-error: true` from ci.yml mypy step.
+- **Bug fix A — _CONVERSATION_STATES RLock**: Added `threading.RLock` to `orchestrator_runtime.py`. Refactored `_get_conversation_state` with double-checked locking (DB I/O outside lock). Refactored `_remember_conversation_state` to wrap read-modify-write + LRU eviction in lock. Added `reset_conversation_states_for_tests()`.
+- **Bug fix B — SQLite WAL**: Added `event.listens_for(engine, "connect")` in `database.py` to set `PRAGMA journal_mode=WAL`, `busy_timeout=5000`, `synchronous=NORMAL`. MySQL branch unaffected.
+- **Bug fix C — Idempotency TOCTOU**: `run_idempotent` in `security.py` now catches `IntegrityError` on concurrent insert, rolls back, returns cached response from winner thread.
+- **Test infrastructure**: Added `tests/conftest.py` with shared fixtures. Registered `slow` and `load` pytest markers in `pyproject.toml`.
+- **22 new test cases**: 5 isolation (test_concurrency_isolation.py) + 5 numbering (test_concurrency_numbering.py) + 4 idempotency (test_concurrency_idempotency.py) + 4 WAL (test_concurrency_sqlite_wal.py) + 4 load (test_load_orchestrator.py, mark=load).
+- **Standalone load script**: `scripts/loadtest/load_orchestrator.py` with httpx.AsyncClient, outputs QPS/P50/P95/P99.
+- Updated `feature_list.json`: `concurrency-load-testing` moved from planned to features with status=done.
+
+**Verification evidence**:
+- `.\.venv\Scripts\python.exe -m pytest tests\ -q -p no:cacheprovider -m "not load"`: 70 passed, 4 deselected, 14 subtests passed.
+- `.\.venv\Scripts\python.exe -m pytest tests\test_load_orchestrator.py -q -m load`: 4 passed.
+- `.\.venv\Scripts\ruff.exe check src tests`: All checks passed.
+- `.\.venv\Scripts\mypy.exe src`: Success: no issues found in 20 source files.
+- `.\init.cmd --check-only --skip-tests`: no failures.
+- `node scripts/harness/validate-harness.mjs`: 100/100, no new warnings.
+
+**Open follow-ups**:
+- All P0/P1/P2 features complete; no planned tasks remain.
+- Load tests use SQLite baseline; production MySQL performance baselines not yet established.
+- Standalone load script requires a running uvicorn server; not integrated into CI.
+
+---
+
+## Session: 2026-07-01 (P3 Phase A — CI & tooling hardening)
+
+**Branch**: `main`
+**Active feature**: P3 Phase A — CI & tooling hardening (7 quick wins).
+**Outcome**: 7 improvements implemented; coverage 75%; all tests pass; all checks green.
+
+**What was done**:
+- **A1 Coverage**: Added `pytest-cov>=5.0` to dev deps. Configured `[tool.coverage.run]` (branch=true, omit seed/server) and `[tool.coverage.report]` (show_missing, fail_under=60). Actual coverage: 75.06%.
+- **A2 pip-audit**: Added `pip-audit>=2.7` to dev deps. New CI `audit` job runs `uv run pip-audit`.
+- **A3 Full table assertion**: CI migration-smoke now derives expected tables from `Base.metadata.tables.keys()` instead of hardcoded 4. Covers all 15 tables (was 4/15).
+- **A4 Readiness fix**: `/api/ready` returns HTTP 503 when degraded (was 200). Removed `inspect().get_table_names()`. Manages session directly for error isolation.
+- **A5 OpenAPI docs**: FastAPI app has title/description/8 tags. All 32 routes tagged. Production disables docs_url.
+- **A6 Exception narrowing**: 3 `except Exception` → `except SQLAlchemyError` in orchestrator_runtime.py. 1 `except Exception` → `except (OSError, ImportError, RuntimeError)` in kb_service.py.
+- **A7 Load test governance**: CI test job uses `-m "not load"`. New non-blocking `load-test` job.
+- **New test**: `test_ready_returns_503_when_db_down`.
+
+**Verification evidence**:
+- `pytest tests\ -q -m "not load" --cov --cov-report=term-missing`: 71 passed, 4 deselected, 14 subtests, coverage 75.06%.
+- `ruff check src tests`: All checks passed.
+- `mypy src`: Success: no issues found in 20 source files.
+- `init.cmd --check-only --skip-tests`: no failures.
+- `validate-harness.mjs`: 100/100, no new warnings.
+
+**Open follow-ups**:
+- Phase B (structlog + slowapi) and Phase C (prometheus_client + xdist) not yet started.
+- Coverage of `api_client.py` is 15% (MCP client, not exercised by REST tests).
+- `pip-audit` reports local package `mcp-order-server` as not on PyPI (expected, non-blocking).
+
+---
+
+## Session: 2026-07-01 (P4 Phase B — structured logging + API rate limiting)
+
+**Branch**: `main`
+**Active feature**: P4 Phase B — structlog structured logging + slowapi API rate limiting.
+**Outcome**: Implemented; all tests pass; all checks green. Documentation completed in a follow-up session.
+
+**What was done**:
+- **structlog 配置**: Created `src/log_config.py` with `configure_logging()` using ProcessorFormatter to bridge stdlib logging. shared_processors chain includes `merge_contextvars`, `add_logger_name`, `add_log_level`, `TimeStamper`, `format_exc_info`, `UnicodeDecoder`, `CallsiteParameterAdder`. Production uses `JSONRenderer`, development uses `ConsoleRenderer(colors=True)`. `handlers.clear()` ensures idempotent re-configuration.
+- **纯 ASGI 中间件**: Created `src/request_logging.py` with `StructuredRequestLoggingMiddleware` (pure ASGI, not BaseHTTPMiddleware) for reliable contextvars propagation. Binds `request_id`/`method`/`path`/`status_code`/`duration_ms` to structlog contextvars. Writes `request_id` to `scope["state"]` for `request_id_dependency`. Replaces former `metrics_middleware`.
+- **stdlib 桥接**: ProcessorFormatter `foreign_pre_chain` includes `merge_contextvars`, so existing `logging.getLogger(__name__)` calls in `orchestrator_runtime.py` automatically receive `request_id` without code changes.
+- **MCP 日志**: `server_customer.py` `main()` calls `configure_logging(log_to_stderr=True)` — logs go to stderr, stdout reserved for JSON-RPC protocol.
+- **slowapi 限流**: Created `src/rate_limit.py` with `Limiter(key_func=get_remote_address)`. 4-tier limits: OTP 5/min, orchestrator 60/min, write 30/min, read 120/min. 29 routes decorated with `@limiter.limit()` + `request: Request` parameter. 3 health endpoints excluded.
+- **env-driven 配置**: `config.py` `RuntimeConfig` added 7 fields (`log_json`, `rate_limit_enabled`, `rate_limit_storage_uri`, `rate_limit_otp`, `rate_limit_orchestrator`, `rate_limit_write`, `rate_limit_read`).
+- **order_api.py**: Module-level `configure_logging()` call. Replaced `metrics_middleware` with `StructuredRequestLoggingMiddleware`. Added `app.state.limiter`, `RateLimitExceeded` exception handler.
+- **api_dependencies.py**: `request_id_dependency` reads from `request.state.request_id` (set by middleware).
+- **测试**: Created `tests/test_structlog_rate_limit.py` with 10 tests (5 structlog + 5 slowapi). `conftest.py` sets `RATE_LIMIT_ENABLED=false` for existing tests. `RateLimitTest` manipulates `limiter.enabled`/`limiter.reset()` directly for test isolation.
+- **权衡**: Removed `headers_enabled=True` (SlowAPIMiddleware based on BaseHTTPMiddleware, incompatible with pure ASGI middleware). Rate limiting still works; only `X-RateLimit-*` response headers are absent.
+- **依赖**: Added `structlog>=26.1.0` and `slowapi>=0.1.9` to `pyproject.toml`. Updated `.env.example` with all new env vars.
+- **文档**: Created ADR-0008 (structured logging) and ADR-0009 (rate limiting). Updated `progress.md` verification evidence, `feature_list.json` (status=done), `AGENTS.md` Key Paths.
+
+**Verification evidence**:
+- `.\.venv\Scripts\python.exe -m pytest tests\ -q -p no:cacheprovider -m "not load" --cov --cov-report=term-missing`: 81 passed, 4 deselected, 14 subtests passed, coverage 76.30%.
+- `.\.venv\Scripts\ruff.exe check src tests`: All checks passed.
+- `.\.venv\Scripts\mypy.exe src`: Success: no issues found in 23 source files.
+- `.\init.cmd --check-only --skip-tests`: no failures.
+- `node scripts/harness/validate-harness.mjs`: 100/100, no new warnings.
+
+**Open follow-ups**:
+- `X-RateLimit-*` response headers not emitted (trade-off for pure ASGI middleware compatibility).
+- `api_client.py` coverage remains at 15% (MCP client, not exercised by REST tests).
+
+---
+
+## Session: 2026-07-01 (P5 Phase C — prometheus_client + pytest-xdist)
+
+**Branch**: `main`
+**Active feature**: P5 Phase C — prometheus_client migration + pytest-xdist parallel tests.
+**Outcome**: Implemented; all tests pass; all checks green.
+
+**What was done**:
+- **prometheus_client 迁移**: Rewrote `src/metrics.py` to replace custom `MetricsRegistry` with `prometheus_client` standard types. `Histogram("http_request_duration_seconds", ..., ["route"])` preserves original metric name and bucket boundaries. 5 DB-count metrics changed to `Gauge` type with `multiprocess_mode='mostrecent'`. `record_request(route, start_time)` function signature unchanged — `request_logging.py` unmodified.
+- **`/api/metrics` 端点**: `order_api.py` endpoint now returns `Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)`. DB queries preserved, values set via `.set()` on Gauge instances. Multiprocess detection via `PROMETHEUS_MULTIPROC_DIR` env var: creates `CollectorRegistry(support_collectors_without_names=True)` + `MultiProcessCollector` for multi-worker aggregation.
+- **pytest-xdist**: Added `pytest-xdist>=3.5`. CI test job and `init_check.py` use `-n auto --dist=loadscope`. Test runtime reduced from ~63s to ~13s (5x speedup). Load tests remain serial (`load-test` job unaffected).
+- **全局状态隔离**: Each xdist worker is an independent OS process — `DATABASE_URL`, `_engine`, `_CONVERSATION_STATES`, `_LOCAL_SEQ`, `limiter`, `REGISTRY` all automatically isolated. No test files or `conftest.py` modified.
+- **测试**: Created `tests/test_metrics_prometheus.py` (3 tests: content type, metric families, bucket boundaries). Enhanced `test_metrics_includes_histogram` with Content-Type and gauge type assertions.
+- **依赖**: Added `prometheus_client>=0.20.0` to dependencies and `pytest-xdist>=3.5` to dev dependencies in `pyproject.toml`.
+- **文档**: Created ADR-0010 (prometheus metrics + xdist). Updated `feature_list.json` (status=done), `progress.md` verification evidence, `.env.example` (PROMETHEUS_MULTIPROC_DIR).
+
+**Verification evidence**:
+- `.\.venv\Scripts\python.exe -m pytest tests\ -q -p no:cacheprovider -n auto --dist=loadscope -m "not load" --cov --cov-report=term-missing`: 84 passed, 4 deselected, 14 subtests passed, coverage 76.04%.
+- `.\.venv\Scripts\ruff.exe check src tests`: All checks passed.
+- `.\.venv\Scripts\mypy.exe src`: Success: no issues found in 23 source files.
+- `.\init.cmd --check-only --skip-tests`: no failures.
+- `node scripts/harness/validate-harness.mjs`: 100/100, no new warnings.
+
+**Open follow-ups**:
+- All planned phases (P1–P5) are complete. No pending work.
+- `api_client.py` coverage remains at 15% (MCP client, not exercised by REST tests).
+- `PROMETHEUS_MULTIPROC_DIR` not yet set in docker-compose prod/monitoring overlays — needs to be added before multi-worker deployment.

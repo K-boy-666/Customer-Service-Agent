@@ -12,4 +12,5 @@ async def actor_dependency(authorization: str | None = Header(None, alias="Autho
 
 
 async def request_id_dependency(request: Request) -> str:
-    return request.headers.get("X-Request-ID", "")
+    """Return request_id from middleware state, falling back to header."""
+    return getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID", "")

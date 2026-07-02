@@ -1,6 +1,6 @@
 ﻿"""add customer service usage events
 
-Revision ID: 0002_customer_service_usage_events
+Revision ID: 0002_usage_events
 Revises: 0001_initial_schema
 Create Date: 2026-06-24
 """
@@ -8,7 +8,7 @@ Create Date: 2026-06-24
 from alembic import op
 from sqlalchemy import Column, DateTime, Integer, JSON, MetaData, String, Table, Text
 
-revision = "0002_customer_service_usage_events"
+revision = "0002_usage_events"
 down_revision = "0001_initial_schema"
 branch_labels = None
 depends_on = None

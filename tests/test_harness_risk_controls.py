@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import importlib
 import ast
+import importlib
 import json
 import os
 import sys
@@ -60,12 +60,7 @@ class HarnessRiskControlsTest(unittest.TestCase):
     def test_customer_server_avoids_cold_start_work_at_import_time(self):
         source = (ROOT / "src" / "server_customer.py").read_text(encoding="utf-8-sig")
         tree = ast.parse(source)
-        top_level_imports = [
-            alias.name
-            for node in tree.body
-            if isinstance(node, ast.Import)
-            for alias in node.names
-        ]
+        top_level_imports = [alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names]
         self.assertNotIn("analytics_service", top_level_imports)
 
         top_level_names = set()
@@ -81,10 +76,7 @@ class HarnessRiskControlsTest(unittest.TestCase):
         runtime_source = (ROOT / "src" / "orchestrator_runtime.py").read_text(encoding="utf-8")
         runtime_tree = ast.parse(runtime_source)
         runtime_imports = [
-            alias.name
-            for node in runtime_tree.body
-            if isinstance(node, ast.Import)
-            for alias in node.names
+            alias.name for node in runtime_tree.body if isinstance(node, ast.Import) for alias in node.names
         ]
         self.assertNotIn("analytics_service", runtime_imports)
 
@@ -111,7 +103,14 @@ class HarnessRiskControlsTest(unittest.TestCase):
             self.assertNotIn("OTP_PROVIDER", env, name)
 
         example = (ROOT / ".env.example").read_text(encoding="utf-8")
-        for needle in ("DATABASE_URL", "OIDC_ISSUER", "OIDC_JWKS_URL", "OTP_PROVIDER", "REPORT_TIMEZONE", "FAQ_RAG_BACKEND"):
+        for needle in (
+            "DATABASE_URL",
+            "OIDC_ISSUER",
+            "OIDC_JWKS_URL",
+            "OTP_PROVIDER",
+            "REPORT_TIMEZONE",
+            "FAQ_RAG_BACKEND",
+        ):
             self.assertIn(needle, example)
 
     def test_order_server_scrubs_identity_verification_env(self):

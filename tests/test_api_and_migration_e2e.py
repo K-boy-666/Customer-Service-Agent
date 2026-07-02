@@ -68,7 +68,9 @@ class ApiAndMigrationE2ETest(unittest.TestCase):
         with TestClient(order_api.app) as client:
             verification = self._verification(client)
 
-            search = client.get("/api/orders/search", params={"q": self.order_id}, headers=self._headers("order_inquiry"))
+            search = client.get(
+                "/api/orders/search", params={"q": self.order_id}, headers=self._headers("order_inquiry")
+            )
             self.assertEqual(search.status_code, 200, search.text)
             self.assertIn("***", search.json()["data"][0]["customer_email"])
 
@@ -81,13 +83,23 @@ class ApiAndMigrationE2ETest(unittest.TestCase):
 
             ret = client.post(
                 "/api/returns",
-                params={"order_id": self.order_id, "type": "refund", "reason": "质量问题", "customer_id": self.customer_id},
+                params={
+                    "order_id": self.order_id,
+                    "type": "refund",
+                    "reason": "质量问题",
+                    "customer_id": self.customer_id,
+                },
                 headers=self._headers("after_sales", verification, "return-api-key"),
             )
             self.assertEqual(ret.status_code, 201, ret.text)
             replay = client.post(
                 "/api/returns",
-                params={"order_id": self.order_id, "type": "refund", "reason": "质量问题", "customer_id": self.customer_id},
+                params={
+                    "order_id": self.order_id,
+                    "type": "refund",
+                    "reason": "质量问题",
+                    "customer_id": self.customer_id,
+                },
                 headers=self._headers("after_sales", verification, "return-api-key"),
             )
             self.assertEqual(replay.status_code, 201)
@@ -102,7 +114,12 @@ class ApiAndMigrationE2ETest(unittest.TestCase):
 
             ticket = client.post(
                 "/api/tickets",
-                params={"title": "API工单", "description": "测试", "customer_id": self.customer_id, "order_id": self.order_id},
+                params={
+                    "title": "API工单",
+                    "description": "测试",
+                    "customer_id": self.customer_id,
+                    "order_id": self.order_id,
+                },
                 headers=self._headers("work_order", verification, "ticket-api-key"),
             )
             self.assertEqual(ticket.status_code, 201, ticket.text)
@@ -116,7 +133,12 @@ class ApiAndMigrationE2ETest(unittest.TestCase):
 
             survey = client.post(
                 "/api/surveys",
-                params={"rating": 2, "feedback": "希望更快", "customer_id": self.customer_id, "order_id": self.order_id},
+                params={
+                    "rating": 2,
+                    "feedback": "希望更快",
+                    "customer_id": self.customer_id,
+                    "order_id": self.order_id,
+                },
                 headers=self._headers("work_order", verification, "survey-api-key"),
             )
             self.assertEqual(survey.status_code, 201, survey.text)
@@ -129,7 +151,7 @@ class ApiAndMigrationE2ETest(unittest.TestCase):
             self.assertEqual(ready.status_code, 200, ready.text)
             checks = ready.json()["checks"]
             self.assertEqual(checks["database"]["status"], "ok")
-            self.assertEqual(checks["migrations"]["status"], "ok")
+            self.assertEqual(checks["configuration"]["status"], "ok")
 
             verification = self._verification(client)
             ticket = client.post(
@@ -180,6 +202,23 @@ class ApiAndMigrationE2ETest(unittest.TestCase):
                 p = f"{path}{suffix}"
                 if os.path.exists(p):
                     os.remove(p)
+
+    def test_ready_returns_503_when_db_down(self):
+        """When DB is unreachable, /api/ready must return 503 (not 200)."""
+        from unittest.mock import patch
+
+        from sqlalchemy.exc import OperationalError
+
+        import order_api
+
+        with TestClient(order_api.app) as client:
+            with patch("order_api.database.get_session") as mock_get:
+                mock_session = mock_get.return_value
+                mock_session.execute.side_effect = OperationalError("SELECT 1", {}, Exception("database is down"))
+                resp = client.get("/api/ready")
+                self.assertEqual(resp.status_code, 503)
+                self.assertEqual(resp.json()["status"], "degraded")
+                self.assertEqual(resp.json()["checks"]["database"]["status"], "failed")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_MODEL = "shibing624/text2vec-base-chinese"
 DEFAULT_BACKEND = "auto"
 
@@ -46,7 +45,8 @@ class FaqRetrievalService:
         model_name: str | None = None,
     ) -> None:
         self.faq_path = Path(faq_path)
-        self.backend = (backend or os.getenv("FAQ_RAG_BACKEND", DEFAULT_BACKEND)).strip().lower()
+        raw_backend = backend or os.getenv("FAQ_RAG_BACKEND") or DEFAULT_BACKEND
+        self.backend = raw_backend.strip().lower()
         self.model_name = model_name or os.getenv("FAQ_RAG_MODEL", DEFAULT_MODEL)
         self.entries = self._load_entries()
         self._texts = [self._entry_text(entry) for entry in self.entries]
@@ -71,8 +71,7 @@ class FaqRetrievalService:
             return []
 
         candidates = [
-            idx for idx, entry in enumerate(self.entries)
-            if not category or entry.get("category") == category
+            idx for idx, entry in enumerate(self.entries) if not category or entry.get("category") == category
         ]
         if not candidates:
             return []
@@ -108,7 +107,7 @@ class FaqRetrievalService:
         return None
 
     def _load_entries(self) -> list[dict[str, Any]]:
-        with open(self.faq_path, "r", encoding="utf-8") as f:
+        with open(self.faq_path, encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, list):
             raise ValueError("faq.json must contain a list of FAQ entries")
@@ -117,10 +116,7 @@ class FaqRetrievalService:
     @staticmethod
     def _entry_text(entry: dict[str, Any]) -> str:
         keywords = " ".join(str(item) for item in entry.get("keywords", []))
-        return " ".join(
-            str(entry.get(key, ""))
-            for key in ("category", "question", "answer")
-        ) + " " + keywords
+        return " ".join(str(entry.get(key, "")) for key in ("category", "question", "answer")) + " " + keywords
 
     @staticmethod
     def _expand_query(text: str) -> str:
@@ -156,7 +152,7 @@ class FaqRetrievalService:
             self._embedding_model = model
             self._entry_embeddings = [self._as_float_list(row) for row in encoded]
             self.active_backend = "sentence-transformers"
-        except Exception:
+        except (OSError, ImportError, RuntimeError):
             if self.backend in {"sentence-transformers", "embedding"}:
                 raise
             self._embedding_model = None
@@ -168,10 +164,7 @@ class FaqRetrievalService:
         assert self._entry_embeddings is not None
         encoded = self._embedding_model.encode([query], normalize_embeddings=True)
         query_vector = self._as_float_list(encoded[0])
-        return [
-            (self._dot(query_vector, self._entry_embeddings[idx]), idx)
-            for idx in candidates
-        ]
+        return [(self._dot(query_vector, self._entry_embeddings[idx]), idx) for idx in candidates]
 
     def _lexical_scores(self, query: str, candidates: list[int]) -> list[tuple[float, int]]:
         query_vector = self._vectorize(query)
@@ -246,7 +239,6 @@ class FaqRetrievalService:
 
         return score
 
-
     @staticmethod
     def _cosine(left: Counter[str], right: Counter[str]) -> float:
         if not left or not right:
@@ -260,7 +252,7 @@ class FaqRetrievalService:
 
     @staticmethod
     def _dot(left: list[float], right: list[float]) -> float:
-        return sum(a * b for a, b in zip(left, right))
+        return sum(a * b for a, b in zip(left, right, strict=False))
 
     @staticmethod
     def _as_float_list(vector: Any) -> list[float]:

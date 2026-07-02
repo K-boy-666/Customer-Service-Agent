@@ -7,15 +7,17 @@ development may use SQLite through the same SQLAlchemy ORM models.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Any
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from models import Base
-
+from numbering import NumberSequencer
+from numbering import get_number_sequencer as _make_sequencer
 
 DEFAULT_SQLITE_URL = "sqlite+pysqlite:///data/orders.db"
 
@@ -42,8 +44,24 @@ def get_engine() -> Engine:
     url = get_database_url()
     if _engine is None or url != DATABASE_URL:
         DATABASE_URL = url
-        connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-        _engine = create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
+        kwargs: dict[str, Any] = {"future": True, "pool_pre_ping": True}
+        if url.startswith("sqlite"):
+            kwargs["connect_args"] = {"check_same_thread": False}
+            _engine = create_engine(url, **kwargs)
+
+            @event.listens_for(_engine, "connect")
+            def _set_sqlite_pragma(dbapi_connection, _connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
+        else:
+            kwargs["pool_size"] = int(os.getenv("DB_POOL_SIZE", "10"))
+            kwargs["max_overflow"] = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+            kwargs["pool_recycle"] = int(os.getenv("DB_POOL_RECYCLE", "3600"))
+            kwargs["pool_timeout"] = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+            _engine = create_engine(url, **kwargs)
         _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False, future=True)
     return _engine
 
@@ -53,6 +71,11 @@ def get_session() -> Session:
         get_engine()
     assert _SessionLocal is not None
     return _SessionLocal()
+
+
+def get_number_sequencer() -> NumberSequencer:
+    """Return the appropriate number sequencer based on the current DATABASE_URL."""
+    return _make_sequencer(get_database_url())
 
 
 @contextmanager

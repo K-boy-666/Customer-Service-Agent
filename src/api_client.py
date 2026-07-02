@@ -1,4 +1,4 @@
-﻿"""
+"""
 HTTP client for the local order REST API.
 
 Reads API_BASE_URL and optional API_KEY from environment variables.
@@ -54,9 +54,7 @@ async def get_order(order_id: str) -> dict[str, Any] | None:
         raise
 
 
-async def list_orders(
-    status: str = "all", limit: int = 20, offset: int = 0
-) -> dict[str, Any]:
+async def list_orders(status: str = "all", limit: int = 20, offset: int = 0) -> dict[str, Any]:
     """List orders, optionally filtered by status."""
     params: dict[str, Any] = {"limit": limit, "offset": offset}
     if status != "all":
@@ -64,9 +62,7 @@ async def list_orders(
     return await _get("/api/orders", params)
 
 
-async def get_orders_by_date(
-    start_date: str, end_date: str, limit: int = 50
-) -> list[dict[str, Any]]:
+async def get_orders_by_date(start_date: str, end_date: str, limit: int = 50) -> list[dict[str, Any]]:
     """Get orders within a date range (ISO format: YYYY-MM-DD)."""
     data = await _get(
         "/api/orders",
@@ -75,9 +71,7 @@ async def get_orders_by_date(
     return data if isinstance(data, list) else data.get("data", [])
 
 
-async def get_orders_by_customer(
-    customer: str, limit: int = 20
-) -> list[dict[str, Any]]:
+async def get_orders_by_customer(customer: str, limit: int = 20) -> list[dict[str, Any]]:
     """Get orders by customer name or ID."""
     data = await _get("/api/orders/by-customer", {"customer": customer, "limit": limit})
     return data if isinstance(data, list) else data.get("data", [])
@@ -86,6 +80,8 @@ async def get_orders_by_customer(
 async def get_order_stats(period: str = "today") -> dict[str, Any]:
     """Get aggregate stats: total count, revenue, breakdown by status."""
     return await _get("/api/orders/stats", {"period": period})
+
+
 async def get_usage_analytics(date: str = "yesterday") -> dict[str, Any]:
     """Get aggregate customer-service usage analytics for a report date."""
     params: dict[str, Any] = {}
@@ -248,9 +244,7 @@ async def update_ticket(
         raise
 
 
-async def add_ticket_note(
-    ticket_id: int, content: str, author: str = "system"
-) -> dict[str, Any]:
+async def add_ticket_note(ticket_id: int, content: str, author: str = "system") -> dict[str, Any]:
     """Add a note to a ticket."""
     return await _post(
         f"/api/tickets/{ticket_id}/notes",
@@ -313,9 +307,7 @@ async def list_returns(
     return await _get("/api/returns", params)
 
 
-async def update_return_status(
-    return_id: int, status: str, note: str | None = None
-) -> dict[str, Any] | None:
+async def update_return_status(return_id: int, status: str, note: str | None = None) -> dict[str, Any] | None:
     """Update a return request status. Returns None if not found."""
     params: dict[str, Any] = {"status": status}
     if note:
@@ -355,4 +347,3 @@ async def submit_satisfaction(
     if order_id:
         params["order_id"] = order_id
     return await _post("/api/surveys", params)
-

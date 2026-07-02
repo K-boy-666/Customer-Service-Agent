@@ -20,7 +20,6 @@ import seed_data
 from models import AuditEvent, ReturnRequest, SatisfactionSurvey, Ticket
 from security import Actor, create_dev_jwt
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -84,10 +83,53 @@ class DailyAnalyticsTest(unittest.TestCase):
             )
             for event in session.query(analytics_service.CustomerServiceUsageEvent).all():
                 event.created_at = ts
-            session.add(Ticket(ticket_number="TK-20260623-001", title="低分回访", type="service_request", priority="P2", status="new", description="低分 follow-up", customer_id=1, created_at=ts, updated_at=ts))
-            session.add(ReturnRequest(return_number="RMA-20260623-001", order_id="ORD-20260601-001", customer_id=1, type="refund", reason="quality", status="pending", created_at=ts, updated_at=ts))
-            session.add(SatisfactionSurvey(survey_number="SAT-20260623-001", customer_id=1, order_id="ORD-20260601-001", rating=2, feedback_text="slow", created_at=ts))
-            session.add(AuditEvent(actor_subject="tester", actor_role="work_order", permission="ticket:create", endpoint="create_ticket", resource_type="ticket", result="failed", failure_reason="validation", created_at=ts))
+            session.add(
+                Ticket(
+                    ticket_number="TK-20260623-001",
+                    title="低分回访",
+                    type="service_request",
+                    priority="P2",
+                    status="new",
+                    description="低分 follow-up",
+                    customer_id=1,
+                    created_at=ts,
+                    updated_at=ts,
+                )
+            )
+            session.add(
+                ReturnRequest(
+                    return_number="RMA-20260623-001",
+                    order_id="ORD-20260601-001",
+                    customer_id=1,
+                    type="refund",
+                    reason="quality",
+                    status="pending",
+                    created_at=ts,
+                    updated_at=ts,
+                )
+            )
+            session.add(
+                SatisfactionSurvey(
+                    survey_number="SAT-20260623-001",
+                    customer_id=1,
+                    order_id="ORD-20260601-001",
+                    rating=2,
+                    feedback_text="slow",
+                    created_at=ts,
+                )
+            )
+            session.add(
+                AuditEvent(
+                    actor_subject="tester",
+                    actor_role="work_order",
+                    permission="ticket:create",
+                    endpoint="create_ticket",
+                    resource_type="ticket",
+                    result="failed",
+                    failure_reason="validation",
+                    created_at=ts,
+                )
+            )
             session.commit()
         finally:
             session.close()
@@ -144,7 +186,11 @@ class DailyAnalyticsTest(unittest.TestCase):
                 tool_calls=[],
                 needs_human=False,
             )
-            rows = session.query(analytics_service.CustomerServiceUsageEvent).order_by(analytics_service.CustomerServiceUsageEvent.id).all()
+            rows = (
+                session.query(analytics_service.CustomerServiceUsageEvent)
+                .order_by(analytics_service.CustomerServiceUsageEvent.id)
+                .all()
+            )
             rows[-2].created_at = datetime(2026, 6, 22, 16, 30, 0)
             rows[-1].created_at = datetime(2026, 6, 23, 16, 30, 0)
             session.commit()
@@ -163,8 +209,12 @@ class DailyAnalyticsTest(unittest.TestCase):
         import order_api
 
         with TestClient(order_api.app) as client:
-            allowed = client.get("/api/analytics/usage", params={"date": "2026-06-23"}, headers=self._headers("data_analysis"))
-            denied = client.get("/api/analytics/usage", params={"date": "2026-06-23"}, headers=self._headers("order_inquiry"))
+            allowed = client.get(
+                "/api/analytics/usage", params={"date": "2026-06-23"}, headers=self._headers("data_analysis")
+            )
+            denied = client.get(
+                "/api/analytics/usage", params={"date": "2026-06-23"}, headers=self._headers("order_inquiry")
+            )
 
         self.assertEqual(allowed.status_code, 200, allowed.text)
         self.assertEqual(allowed.json()["usage"]["total_conversations"], 2)
@@ -201,5 +251,3 @@ class DailyAnalyticsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
-

@@ -195,7 +195,7 @@ def stage_tests(reporter: Reporter, skip_tests: bool) -> None:
     if not (ROOT / "tests").exists():
         reporter.warn("No tests/ directory found")
         return
-    command = [project_python(), "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider"]
+    command = [project_python(), "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider", "-n", "auto", "--dist=loadscope"]
     result = run_command(command, timeout=240)
     print(result.stdout)
     if result.returncode == 0:

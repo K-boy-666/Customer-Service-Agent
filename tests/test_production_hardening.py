@@ -161,6 +161,71 @@ class ProductionHardeningTest(unittest.TestCase):
         with database.session_scope() as session:
             return session.query(Ticket).count()
 
+    def test_sequencer_factory_selects_by_url(self):
+        from numbering import InProcessSequencer, MysqlCounterSequencer, get_number_sequencer
+
+        sqlite_seq = get_number_sequencer("sqlite+pysqlite:///data/orders.db")
+        mysql_seq = get_number_sequencer("mysql+pymysql://user:pass@host:3306/db?charset=utf8mb4")
+        self.assertIsInstance(sqlite_seq, InProcessSequencer)
+        self.assertIsInstance(mysql_seq, MysqlCounterSequencer)
+
+    def test_engine_pool_config_for_mysql(self):
+        from sqlalchemy import create_engine
+
+        engine = create_engine(
+            "mysql+pymysql://user:pass@host:3306/db?charset=utf8mb4",
+            future=True,
+            pool_pre_ping=True,
+            pool_size=10,
+            max_overflow=20,
+            pool_recycle=3600,
+            pool_timeout=30,
+        )
+        self.assertEqual(engine.pool.size(), 10)
+        self.assertEqual(engine.pool._max_overflow, 20)
+
+    def test_lifespan_skips_init_and_seed_in_production(self):
+        """Production mode must not call init_db or seed_data."""
+        import asyncio
+        from unittest.mock import patch
+
+        import config as runtime_config
+        import order_api
+
+        with (
+            patch.object(runtime_config, "is_production", return_value=True),
+            patch.object(runtime_config, "validate_runtime_config"),
+            patch.object(order_api.database, "init_db") as mock_init,
+            patch.object(order_api.seed_data, "seed") as mock_seed,
+        ):
+
+            async def run_lifespan():
+                async with order_api.lifespan(order_api.app):
+                    pass
+
+            asyncio.run(run_lifespan())
+
+        mock_init.assert_not_called()
+        mock_seed.assert_not_called()
+
+    def test_metrics_includes_histogram(self):
+        """The /api/metrics endpoint must include histogram lines after requests."""
+        from fastapi.testclient import TestClient
+        from prometheus_client import CONTENT_TYPE_LATEST
+
+        import order_api
+
+        with TestClient(order_api.app) as client:
+            client.get("/api/orders")
+            resp = client.get("/api/metrics")
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("http_request_duration_seconds_bucket", resp.text)
+            # Verify correct Prometheus content type
+            self.assertEqual(resp.headers["content-type"], CONTENT_TYPE_LATEST)
+            # Verify gauge metrics are present
+            self.assertIn("customer_service_conversations_total", resp.text)
+            self.assertIn("# TYPE customer_service_conversations_total gauge", resp.text)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

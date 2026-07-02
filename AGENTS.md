@@ -101,6 +101,9 @@ A feature is done only when all of these are true:
 | `docs/adr/` | Architecture Decision Records |
 | `.claude/agents/` | Agent system prompts |
 | `.claude/mcp.json` | MCP server launch config |
+| `src/log_config.py` | structlog configuration with stdlib logging bridge |
+| `src/rate_limit.py` | slowapi rate limiter setup and LIMIT_* constants |
+| `src/request_logging.py` | Pure ASGI request logging middleware (contextvars binding) |
 | `tests/` | pytest suite |
 
 ## External Services

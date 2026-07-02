@@ -7,15 +7,20 @@ composition can be tested without launching a live LLM agent.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import logging
 import re
+import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException
 
 import database
 import service_layer as svc
@@ -23,8 +28,6 @@ from dispatcher import RuleBasedIntentDispatcher
 from kb_service import FaqRetrievalService, get_faq_retriever
 from models import ConversationStateRecord
 from security import Actor, Verification, run_idempotent
-from starlette.exceptions import HTTPException
-
 
 LOGGER = logging.getLogger(__name__)
 MAX_CONVERSATION_STATES = 256
@@ -77,6 +80,13 @@ class ConversationState:
 
 
 _CONVERSATION_STATES: OrderedDict[str, ConversationState] = OrderedDict()
+_STATES_LOCK = threading.RLock()
+
+
+def reset_conversation_states_for_tests() -> None:
+    """Clear the in-process conversation state cache. Tests call this in setUp."""
+    with _STATES_LOCK:
+        _CONVERSATION_STATES.clear()
 
 
 @dataclass
@@ -172,7 +182,7 @@ class LocalCustomerServiceTools:
 
     def _load_faq(self) -> list[dict[str, Any]]:
         if self._faq is None:
-            with open(self.faq_path, "r", encoding="utf-8") as f:
+            with open(self.faq_path, encoding="utf-8") as f:
                 self._faq = json.load(f)
         return self._faq
 
@@ -228,7 +238,14 @@ class LocalCustomerServiceTools:
     ) -> dict[str, Any]:
         if self.verification is None:
             raise HTTPException(status_code=401, detail="missing_identity_verification")
-        payload = {"title": title, "description": description, "ticket_type": ticket_type, "priority": priority, "customer_id": customer_id, "order_id": order_id}
+        payload = {
+            "title": title,
+            "description": description,
+            "ticket_type": ticket_type,
+            "priority": priority,
+            "customer_id": customer_id,
+            "order_id": order_id,
+        }
         operation_key = self._scoped_idempotency_key("ticket", payload, f"auto-ticket-{title}-{customer_id}-{order_id}")
         with database.session_scope() as session:
             response, _code, _replayed = run_idempotent(
@@ -266,7 +283,13 @@ class LocalCustomerServiceTools:
     ) -> dict[str, Any] | None:
         if self.verification is None:
             raise HTTPException(status_code=401, detail="missing_identity_verification")
-        payload = {"order_id": order_id, "return_type": return_type, "reason": reason, "description": description, "customer_id": customer_id}
+        payload = {
+            "order_id": order_id,
+            "return_type": return_type,
+            "reason": reason,
+            "description": description,
+            "customer_id": customer_id,
+        }
         operation_key = self._scoped_idempotency_key("return", payload, f"auto-return-{order_id}-{return_type}")
         with database.session_scope() as session:
             response, _code, _replayed = run_idempotent(
@@ -303,7 +326,9 @@ class LocalCustomerServiceTools:
         if self.verification is None:
             raise HTTPException(status_code=401, detail="missing_identity_verification")
         payload = {"rating": rating, "feedback": feedback, "customer_id": customer_id, "order_id": order_id}
-        operation_key = self._scoped_idempotency_key("survey", payload, f"auto-survey-{customer_id}-{order_id}-{rating}")
+        operation_key = self._scoped_idempotency_key(
+            "survey", payload, f"auto-survey-{customer_id}-{order_id}-{rating}"
+        )
         with database.session_scope() as session:
             response, _code, _replayed = run_idempotent(
                 session,
@@ -429,7 +454,9 @@ class CustomerServiceOrchestrator:
             customer_reply = self._compose_reply(results)
             needs_human = any(result.status == "needs-escalation" for result in results)
             status = self._overall_status(results, needs_human)
-            handoff_package = self._build_handoff_package(context, intents, results, emotional_level) if needs_human else {}
+            handoff_package = (
+                self._build_handoff_package(context, intents, results, emotional_level) if needs_human else {}
+            )
 
             run = OrchestratorRun(
                 status=status,
@@ -465,9 +492,7 @@ class CustomerServiceOrchestrator:
             self._record_usage_event(run.to_dict(), context, failure_reason=str(exc))
             raise
 
-    def analyze_intents(
-        self, context: CustomerContext, emotional_level: str
-    ) -> list[IntentAnalysis]:
+    def analyze_intents(self, context: CustomerContext, emotional_level: str) -> list[IntentAnalysis]:
         dispatch = self.dispatcher.analyze(
             context.message,
             {
@@ -757,7 +782,7 @@ class CustomerServiceOrchestrator:
                     message_length=len(context.message),
                     failure_reason=failure_reason,
                 )
-        except Exception:
+        except SQLAlchemyError:
             LOGGER.warning("failed to record customer-service usage analytics", exc_info=True)
             # Analytics must never block the customer response path.
             return
@@ -834,9 +859,7 @@ class CustomerServiceOrchestrator:
             "created_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         }
 
-    def _dedupe_intents_by_priority(
-        self, intents: list[IntentAnalysis]
-    ) -> list[IntentAnalysis]:
+    def _dedupe_intents_by_priority(self, intents: list[IntentAnalysis]) -> list[IntentAnalysis]:
         priority = [
             "human_handoff",
             "satisfaction",
@@ -923,10 +946,12 @@ class CustomerServiceOrchestrator:
     def _get_conversation_state(conversation_id: str | None) -> ConversationState:
         if not conversation_id:
             return ConversationState()
-        state = _CONVERSATION_STATES.get(conversation_id)
-        if state is not None:
-            _CONVERSATION_STATES.move_to_end(conversation_id)
-            return state
+        with _STATES_LOCK:
+            state = _CONVERSATION_STATES.get(conversation_id)
+            if state is not None:
+                _CONVERSATION_STATES.move_to_end(conversation_id)
+                return state
+        # DB query outside lock to avoid blocking other threads on I/O.
         try:
             with database.session_scope() as session:
                 row = session.get(ConversationStateRecord, conversation_id)
@@ -937,10 +962,11 @@ class CustomerServiceOrchestrator:
                     order_id=row.order_id,
                     updated_at=row.updated_at.isoformat() if row.updated_at else "",
                 )
-                _CONVERSATION_STATES[conversation_id] = state
-                _CONVERSATION_STATES.move_to_end(conversation_id)
+                with _STATES_LOCK:
+                    _CONVERSATION_STATES[conversation_id] = state
+                    _CONVERSATION_STATES.move_to_end(conversation_id)
                 return state
-        except Exception:
+        except SQLAlchemyError:
             LOGGER.warning("failed to read durable conversation state", exc_info=True)
             return ConversationState()
 
@@ -948,16 +974,18 @@ class CustomerServiceOrchestrator:
     def _remember_conversation_state(context: CustomerContext) -> None:
         if not context.conversation_id:
             return
-        existing = _CONVERSATION_STATES.get(context.conversation_id, ConversationState())
-        state = ConversationState(
-            customer_id=context.customer_id if context.customer_id is not None else existing.customer_id,
-            order_id=context.order_id or existing.order_id,
-            updated_at=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-        )
-        _CONVERSATION_STATES[context.conversation_id] = state
-        _CONVERSATION_STATES.move_to_end(context.conversation_id)
-        while len(_CONVERSATION_STATES) > MAX_CONVERSATION_STATES:
-            _CONVERSATION_STATES.popitem(last=False)
+        with _STATES_LOCK:
+            existing = _CONVERSATION_STATES.get(context.conversation_id, ConversationState())
+            state = ConversationState(
+                customer_id=context.customer_id if context.customer_id is not None else existing.customer_id,
+                order_id=context.order_id or existing.order_id,
+                updated_at=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            )
+            _CONVERSATION_STATES[context.conversation_id] = state
+            _CONVERSATION_STATES.move_to_end(context.conversation_id)
+            while len(_CONVERSATION_STATES) > MAX_CONVERSATION_STATES:
+                _CONVERSATION_STATES.popitem(last=False)
+        # DB persist outside lock; concurrent writes to same row are serialized by SQLite.
         try:
             with database.session_scope() as session:
                 row = session.get(ConversationStateRecord, context.conversation_id)
@@ -967,10 +995,5 @@ class CustomerServiceOrchestrator:
                 row.customer_id = state.customer_id
                 row.order_id = state.order_id
                 row.updated_at = datetime.now()
-        except Exception:
+        except SQLAlchemyError:
             LOGGER.warning("failed to persist durable conversation state", exc_info=True)
-
-
-
-
-

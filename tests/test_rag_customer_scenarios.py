@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from kb_service import FaqRetrievalService
 from orchestrator_runtime import CustomerServiceOrchestrator, LocalCustomerServiceTools
 
-
 FAQ_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "faq.json")
 
 
@@ -59,9 +58,7 @@ SCENARIOS = [
 class RagCustomerScenarioTest(unittest.TestCase):
     def setUp(self) -> None:
         self.retriever = FaqRetrievalService(FAQ_PATH, backend="lexical")
-        self.runtime = CustomerServiceOrchestrator(
-            tools=LocalCustomerServiceTools(faq_retriever=self.retriever)
-        )
+        self.runtime = CustomerServiceOrchestrator(tools=LocalCustomerServiceTools(faq_retriever=self.retriever))
 
     def test_customer_messages_route_to_expected_faq_answers(self):
         for scenario in SCENARIOS:

@@ -1,7 +1,7 @@
 """add durable conversation state
 
 Revision ID: 0003_conversation_states
-Revises: 0002_customer_service_usage_events
+Revises: 0002_usage_events
 Create Date: 2026-06-27
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "0003_conversation_states"
-down_revision = "0002_customer_service_usage_events"
+down_revision = "0002_usage_events"
 branch_labels = None
 depends_on = None
 

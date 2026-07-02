@@ -40,7 +40,9 @@ class Scenario3ReturnTest(unittest.TestCase):
         session = database.get_session()
         try:
             order = session.query(Order).filter_by(status="delivered").first()
-            challenge = request_otp(session, "customer_identity", "email", "test@example.com", order.customer_id, order.id)
+            challenge = request_otp(
+                session, "customer_identity", "email", "test@example.com", order.customer_id, order.id
+            )
             verified = verify_otp(session, challenge["challenge_id"], challenge["dev_code"])
             verification = load_verification(session, verified["verification_token"])
             ret = svc.create_return(

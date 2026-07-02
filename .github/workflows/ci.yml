@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+      - run: uv sync --frozen
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy src
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+      - run: uv sync --frozen
+      - run: uv run pip-audit
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --frozen
+      - run: uv run alembic upgrade head
+      - run: uv run pytest tests/ -q -m "not load" -n auto --dist=loadscope --cov --cov-report=term-missing --cov-report=xml
+      - uses: codecov/codecov-action@v5
+        if: matrix.python-version == '3.12'
+
+  load-test:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+      - run: uv sync --frozen
+      - run: uv run alembic upgrade head
+      - run: uv run pytest tests/test_load_orchestrator.py -q -m load
+
+  migration-smoke:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: customer_service
+          MYSQL_USER: cs
+          MYSQL_PASSWORD: cs_pw
+          MYSQL_ROOT_PASSWORD: root_pw
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot_pw"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+      - run: uv sync --frozen
+      - run: uv run alembic upgrade head
+        env:
+          DATABASE_URL: "mysql+pymysql://cs:cs_pw@127.0.0.1:3306/customer_service?charset=utf8mb4"
+      - run: uv run alembic downgrade base
+        env:
+          DATABASE_URL: "mysql+pymysql://cs:cs_pw@127.0.0.1:3306/customer_service?charset=utf8mb4"
+      - run: uv run alembic upgrade head
+        env:
+          DATABASE_URL: "mysql+pymysql://cs:cs_pw@127.0.0.1:3306/customer_service?charset=utf8mb4"
+      - run: uv run python src/seed_data.py
+        env:
+          DATABASE_URL: "mysql+pymysql://cs:cs_pw@127.0.0.1:3306/customer_service?charset=utf8mb4"
+      - name: Verify all tables from model metadata
+        run: |
+          uv run python -c "
+          import sys; sys.path.insert(0, 'src')
+          from models import Base
+          from sqlalchemy import inspect, create_engine
+          e = create_engine('mysql+pymysql://cs:cs_pw@127.0.0.1:3306/customer_service?charset=utf8mb4')
+          expected = set(Base.metadata.tables.keys()) | {'sequence_counters', 'alembic_version'}
+          actual = set(inspect(e).get_table_names())
+          missing = expected - actual
+          assert not missing, f'Missing tables: {sorted(missing)}'
+          print(f'Verified {len(expected)} tables:', sorted(expected))
+          "

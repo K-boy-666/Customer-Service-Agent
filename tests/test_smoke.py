@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import database
 import seed_data
 import service_layer as svc
-from models import AuditEvent, Order, ReturnRequest, SatisfactionSurvey, Ticket
+from models import AuditEvent, Order
 from security import Actor, load_verification, request_otp, verify_otp
 
 
@@ -74,9 +74,13 @@ class SmokeTest(unittest.TestCase):
                 order.customer_id,
                 verification,
             )
-            updated = svc.update_return_status(session, Actor("agent", "after_sales", {}), ret["id"], "approved", verification=verification)
+            updated = svc.update_return_status(
+                session, Actor("agent", "after_sales", {}), ret["id"], "approved", verification=verification
+            )
             self.assertEqual(updated["status"], "approved")
-            updated = svc.update_return_status(session, Actor("agent", "after_sales", {}), ret["id"], "refunded", verification=verification)
+            updated = svc.update_return_status(
+                session, Actor("agent", "after_sales", {}), ret["id"], "refunded", verification=verification
+            )
             self.assertEqual(updated["status"], "refunded")
         finally:
             session.close()

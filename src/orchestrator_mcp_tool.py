@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 
+from starlette.exceptions import HTTPException
+
 import database
 from orchestrator_api import respond_to_customer_message
 from security import Actor, load_verification
-from starlette.exceptions import HTTPException
 
 
 def handle_customer_message_tool(
@@ -48,13 +49,17 @@ def handle_customer_message_tool(
         else:
             result = {
                 "status": "failed",
-                "customer_reply": "当前请求处理时遇到业务异常，部分已完成的操作可能已经记录，请按返回的记录或工单继续跟进。",
+                "customer_reply": (
+                    "当前请求处理时遇到业务异常，部分已完成的操作可能已经记录，请按返回的记录或工单继续跟进。"
+                ),
                 "error": str(exc.detail),
             }
     except Exception as exc:
         result = {
             "status": "failed",
-            "customer_reply": "当前请求处理时遇到内部异常，部分已完成的操作可能已经记录，请按返回的记录或工单继续跟进。",
+            "customer_reply": (
+                "当前请求处理时遇到内部异常，部分已完成的操作可能已经记录，请按返回的记录或工单继续跟进。"
+            ),
             "error": str(exc),
         }
     return json.dumps(result, ensure_ascii=False, indent=2)

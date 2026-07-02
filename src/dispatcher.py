@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
 ORDER_ID_RE = re.compile(r"ORD-\d{8}-\d{3}", re.IGNORECASE)
 TRACKING_RE = re.compile(r"\b[A-Z]{2}\d{10,16}\b", re.IGNORECASE)
 RATING_RE = re.compile(r"([1-5])\s*(?:星|分|star|stars)", re.IGNORECASE)
@@ -46,9 +45,48 @@ class RuleBasedIntentDispatcher:
         "supervisor",
     )
     l3_keywords = ("自杀", "自残", "伤害自己", "杀人", "打死", "court order")
-    after_sales_keywords = ("退货", "退款", "换货", "售后", "坏了", "故障", "不灵", "质量问题", "return", "refund", "exchange", "broken")
-    order_keywords = ("订单", "物流", "快递", "发货", "到哪", "运单", "签收", "会员", "积分", "order", "shipment", "tracking")
-    consultation_keywords = ("怎么", "如何", "规则", "政策", "多久", "多少天", "发票", "权益", "产品", "保修", "policy", "warranty")
+    after_sales_keywords = (
+        "退货",
+        "退款",
+        "换货",
+        "售后",
+        "坏了",
+        "故障",
+        "不灵",
+        "质量问题",
+        "return",
+        "refund",
+        "exchange",
+        "broken",
+    )
+    order_keywords = (
+        "订单",
+        "物流",
+        "快递",
+        "发货",
+        "到哪",
+        "运单",
+        "签收",
+        "会员",
+        "积分",
+        "order",
+        "shipment",
+        "tracking",
+    )
+    consultation_keywords = (
+        "怎么",
+        "如何",
+        "规则",
+        "政策",
+        "多久",
+        "多少天",
+        "发票",
+        "权益",
+        "产品",
+        "保修",
+        "policy",
+        "warranty",
+    )
     work_order_keywords = ("工单", "ticket", "进度", "派单")
     handoff_keywords = ("人工", "真人", "转人工", "human", "representative")
     injection_markers = ("ignore previous instructions", "忽略之前", "system prompt", "developer message")
@@ -75,19 +113,55 @@ class RuleBasedIntentDispatcher:
 
         rating = RATING_RE.search(text)
         if rating is not None:
-            intents.append(DispatchIntent("satisfaction", 0.95, "customer-service-orchestrator", "Customer provided an explicit satisfaction rating.", [rating.group(0)]))
+            intents.append(
+                DispatchIntent(
+                    "satisfaction",
+                    0.95,
+                    "customer-service-orchestrator",
+                    "Customer provided an explicit satisfaction rating.",
+                    [rating.group(0)],
+                )
+            )
 
         l2_matches = self._matches(text, self.l2_keywords)
         if l2_matches:
-            intents.append(DispatchIntent("complaint", 0.95, "complaint-agent", "Detected complaint/escalation keyword.", l2_matches))
-            intents.append(DispatchIntent("work_order", 0.88, "work-order-agent", "Formal complaint should be recorded as a ticket.", l2_matches))
+            intents.append(
+                DispatchIntent(
+                    "complaint", 0.95, "complaint-agent", "Detected complaint/escalation keyword.", l2_matches
+                )
+            )
+            intents.append(
+                DispatchIntent(
+                    "work_order",
+                    0.88,
+                    "work-order-agent",
+                    "Formal complaint should be recorded as a ticket.",
+                    l2_matches,
+                )
+            )
 
         if self._contains_any(text, self.handoff_keywords):
-            intents.append(DispatchIntent("human_handoff", 0.9, "human-handoff-agent", "Customer requested a human handoff.", self._matches(text, self.handoff_keywords)))
+            intents.append(
+                DispatchIntent(
+                    "human_handoff",
+                    0.9,
+                    "human-handoff-agent",
+                    "Customer requested a human handoff.",
+                    self._matches(text, self.handoff_keywords),
+                )
+            )
 
         after_sales_matches = self._matches(text, self.after_sales_keywords)
         if after_sales_matches:
-            intents.append(DispatchIntent("after_sales", 0.9, "after-sales-agent", "Detected return/refund/exchange/troubleshooting request.", after_sales_matches))
+            intents.append(
+                DispatchIntent(
+                    "after_sales",
+                    0.9,
+                    "after-sales-agent",
+                    "Detected return/refund/exchange/troubleshooting request.",
+                    after_sales_matches,
+                )
+            )
 
         order_matches = self._matches(text, self.order_keywords)
         order_id = context.get("order_id") or self._extract_order_id(text)
@@ -95,15 +169,39 @@ class RuleBasedIntentDispatcher:
             evidence = order_matches[:]
             if order_id:
                 evidence.append(str(order_id))
-            intents.append(DispatchIntent("order_inquiry", 0.86, "order-inquiry-agent", "Detected order, logistics, tracking, membership, or order ID signal.", evidence))
+            intents.append(
+                DispatchIntent(
+                    "order_inquiry",
+                    0.86,
+                    "order-inquiry-agent",
+                    "Detected order, logistics, tracking, membership, or order ID signal.",
+                    evidence,
+                )
+            )
 
         work_matches = self._matches(text, self.work_order_keywords)
         if work_matches:
-            intents.append(DispatchIntent("work_order", 0.82, "work-order-agent", "Detected work-order operation or ticket progress request.", work_matches))
+            intents.append(
+                DispatchIntent(
+                    "work_order",
+                    0.82,
+                    "work-order-agent",
+                    "Detected work-order operation or ticket progress request.",
+                    work_matches,
+                )
+            )
 
         consult_matches = self._matches(text, self.consultation_keywords)
         if consult_matches:
-            intents.append(DispatchIntent("consultation", 0.78, "consultation-agent", "Detected policy, FAQ, or product consultation request.", consult_matches))
+            intents.append(
+                DispatchIntent(
+                    "consultation",
+                    0.78,
+                    "consultation-agent",
+                    "Detected policy, FAQ, or product consultation request.",
+                    consult_matches,
+                )
+            )
 
         if not intents:
             intents.append(
