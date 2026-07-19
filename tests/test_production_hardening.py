@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import database
+import profit_engine_hooks
 import seed_data
 import service_layer as svc
 from models import Order, Ticket
@@ -43,6 +44,10 @@ class ProductionHardeningTest(unittest.TestCase):
         self.verification_token = self._verification(self.customer_id, self.order_id)
 
     def tearDown(self) -> None:
+        # Shut down profit_engine_hooks' ThreadPoolExecutor before resetting
+        # the DB engine. Worker threads hold SQLite file handles via
+        # SingletonThreadPool; without this, os.remove fails with WinError 32.
+        profit_engine_hooks.shutdown_executor_for_tests()
         database.reset_engine_for_tests("sqlite+pysqlite:///:memory:")
         _CONVERSATION_STATES.clear()
         os.environ.pop("APP_ENV", None)

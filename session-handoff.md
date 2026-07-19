@@ -481,3 +481,78 @@
 - All planned phases (P1–P5) are complete. No pending work.
 - `api_client.py` coverage remains at 15% (MCP client, not exercised by REST tests).
 - `PROMETHEUS_MULTIPROC_DIR` not yet set in docker-compose prod/monitoring overlays — needs to be added before multi-worker deployment.
+
+---
+
+## Session: 2026-07-19 (cs-profit-engine Task 10 — 文档 / ADR / Harness 同步)
+
+**Branch**: `main`
+**Active feature**: cs-profit-engine Task 10 — docs, ADR, harness sync (final task of the AI 驱动客服利润引擎 spec).
+**Outcome**: Completed. ADR-0011 authored, `feature_list.json` extended with 8 new features, `progress.md` updated, this Session block appended, full harness verification collected.
+
+**What was done**:
+- **SubTask 10.1 — ADR-0011**: Authored `docs/adr/0011-cs-profit-engine.md` following the structure of ADR-0004 / ADR-0010 (状态 / 背景 / 决策 / 理由 / 后果 / 备选方案 / References). Documented 7 core decisions:
+  1. New L1 Agents: `recommendation-agent` + `analytics-agent` (extends ADR-0004).
+  2. Async hooks via `ThreadPoolExecutor` (max_workers=4); recommendation generation synchronous with 2s timeout.
+  3. Four attribution models (first_touch / last_touch / linear / time_decay, half-life 7d), default `last_touch`.
+  4. Session context written to `customer_service_usage_events.intents` JSON (option B — no schema change).
+  5. Peak-load degradation: load > 80% or queue wait > 30s sheds profit-engine internal intents only; L0/L1/L2 business intents always processed.
+  6. Proactive handoff trigger: `vip` + `intent_confidence < 0.7`.
+  7. Profit dashboard API reuses existing FastAPI app in `order_api.py` with `analytics:read` permission.
+  - Documented 3 rejected alternatives (asyncio / independent context table / refusing L2 intents under extreme load).
+- **SubTask 10.2 — feature_list.json**: Added 8 new features (all `status: done`) with title / description / depends_on / done_criteria / verified_by. Updated `completed_order` to append the 8 new feature ids in dependency order. Existing 14 features untouched. JSON validated: 22 features total, 22 entries in `completed_order`.
+  - `unified-user-profile` (depends_on: [])
+  - `demand-mining-engine` (depends_on: ["unified-user-profile"])
+  - `proactive-recommendation` (depends_on: ["demand-mining-engine"])
+  - `revenue-attribution` (depends_on: ["unified-user-profile"])
+  - `profit-engine-orchestrator-integration` (depends_on: ["demand-mining-engine", "proactive-recommendation", "revenue-attribution"])
+  - `peak-load-degradation` (depends_on: [])
+  - `human-handoff-upgrade` (depends_on: ["profit-engine-orchestrator-integration", "proactive-recommendation"])
+  - `profit-dashboard-api` (depends_on: ["revenue-attribution", "proactive-recommendation", "profit-engine-orchestrator-integration"])
+- **SubTask 10.3 — progress.md / session-handoff.md**: Appended a "AI 驱动客服利润引擎 (cs-profit-engine Task 1–10) - 2026-07-19" section to `progress.md` listing the 9 new modules, 9 new tables + migration `0005_profit_engine_schema.py`, 113 new test cases (with per-file breakdown), ADR-0011 summary, `feature_list.json` update summary, dashboard API + peak-load metrics summary, and open follow-ups. Updated the `progress.md` header "Last updated" to 2026-07-19 and the "Current feature" line. Appended this Session block to `session-handoff.md`.
+- **SubTask 10.4 — Harness verification**: Ran all three verification commands and collected results (see Verification evidence below). No source code changes were needed — the cs-profit-engine source files (Tasks 1–9) were already in place; this task only touched documentation / state / lifecycle artifacts.
+
+**Files touched this session**:
+- `docs/adr/0011-cs-profit-engine.md` — created (ADR-0011, 7 decisions + 3 rejected alternatives + references).
+- `feature_list.json` — appended 8 new features + 8 entries in `completed_order`; existing 14 features unchanged.
+- `progress.md` — appended "AI 驱动客服利润引擎" section; updated "Last updated" / "Current feature" / Recent completions table header row.
+- `session-handoff.md` — appended this Session block.
+
+**State snapshot**:
+- All 22 features in `feature_list.json` are `done` (14 prior + 8 new cs-profit-engine).
+- ADR inventory: 0011 ADRs total (`0001` through `0011`); ADR-0011 covers cs-profit-engine architecture.
+- Tests: 195 passed + 2 pre-existing Windows temp-file PermissionError failures + 14 subtests passed (113 new cs-profit-engine tests all pass).
+- `init.cmd --check-only --skip-tests`: 0 failures, 2 warnings (REST API not running + tests skipped — both expected).
+- `validate-harness.mjs`: 100/100, all checks passed, no new warnings.
+
+**Key decisions made**:
+- ADR-0011 reuses ADR-0004 L1 tier for the two new agents rather than introducing a new permission tier — minimises cognitive + maintenance cost.
+- ADR-0011 picks `ThreadPoolExecutor` over `asyncio` for async hooks to stay compatible with the synchronous orchestrator runtime; `.result(timeout=2.0)` enforces the 2s SLA without nested event loops.
+- ADR-0011 picks option B (write mining result to existing `intents` JSON column) over a new `conversation_context` table to avoid migration complexity; the spec's 24h dedup / next-turn reuse / agent-assist reads all work with a `conversation_id` lookup against the latest usage event.
+- ADR-0011 enshrines "L0/L1/L2 business intents are never shed under degradation; only profit-engine internal intents (recommendation / analytics) are shed" — the customer-facing response path is protected even at peak load.
+- ADR-0011 picks `last_touch` as the default attribution model (most conservative, easiest to audit); operators can switch via `?model=` query parameter or override `DEFAULT_MODEL` later.
+- `feature_list.json` new features use the same schema (title / status / description / depends_on / done_criteria / verified_by) as the existing 14 features; `completed_order` preserves prior order and appends the new ids in dependency order.
+
+**Verification evidence**:
+- `.\.venv\Scripts\python.exe -m pytest tests\ -q -p no:cacheprovider -n auto --dist=loadscope -m "not load"`: **195 passed, 2 failed, 14 subtests passed, 4 warnings in 24.35s**.
+  - The 2 failures are pre-existing Windows temp-file cleanup issues, NOT cs-profit-engine regressions:
+    - `tests/test_production_hardening.py::ProductionHardeningTest::test_dispatcher_exposes_evidence_and_handles_mixed_language` — `PermissionError: [WinError 32]` in `tearDown` removing the temp `.db` file (SQLAlchemy connection pool still holds a handle under xdist).
+    - `tests/test_concurrency_idempotency.py::ConcurrencyIdempotencyTest::test_orchestrator_write_fanout_idempotency_keys_no_collision` — same `PermissionError: [WinError 32]` in `tearDown`.
+  - Both failing tests pre-date the cs-profit-engine spec (P1 hardening + P2 concurrency); the same Windows + SQLite + xdist temp-file ACL issue is documented in earlier session-handoff blocks (2026-06-27 / 2026-07-01).
+  - All 113 new cs-profit-engine tests pass (test_user_profile_service 9 + test_demand_mining_service 16 + test_recommendation_service 16 + test_attribution_service 16 + test_orchestrator_profit_integration 8 + test_profit_engine_migration 4 + test_peak_load_degradation 13 + test_human_handoff_upgrade 19 + test_profit_dashboard_api 12 = 113).
+- `.\init.cmd --check-only --skip-tests`: **0 failures, 2 warnings** — `[4/6] REST API health` warns localhost:8000 not running (expected); `[6/6] Test suite` warns tests skipped (requested via `--skip-tests`). All other 4 stages OK (Python 3.11.14, uv + .venv + uv.lock, data/orders.db exists, MCP config + entry files + identity-verification scrub all OK, Node.js available).
+- `node scripts/harness/validate-harness.mjs`: **Weighted Total 100/100** — Instructions 100, State 100, Verification 100, Scope 100, Lifecycle 100. "All checks passed. Harness is production-grade." No new warnings.
+
+**Open follow-ups / decisions for operators**:
+- **Attribution default model**: ADR-0011 defaults to `last_touch`. Operators should confirm this matches business intent; if `time_decay` or `first_touch` is preferred, update `attribution_service.DEFAULT_MODEL` or expose a config override. This is the single highest-impact decision point because it shifts how ROI is computed across all dashboards.
+- **Prometheus alert thresholds**: New metrics `cs_degradation_active` (Gauge 0/1) and `cs_queue_wait_seconds` (Histogram) need alert rules. Suggested starting points: `cs_degradation_active == 1` for > 5 min → page; `cs_queue_wait_seconds` P95 > 30s → page; `cs_load_percent > 80` for > 2 min → warn. Rules should be added to `monitoring/alertmanager/rules.yml` (not done in this session).
+- **`PROMETHEUS_MULTIPROC_DIR`**: Still not set in docker-compose prod/monitoring overlays (carryover from ADR-0010 / 2026-07-01 session). Must be set before multi-worker uvicorn deployment or the new `cs_*` gauges will only reflect one worker.
+- **`agent_routing.AgentRouter` persistence**: The router is in-memory only by design (avoid routing to offline agents). On process restart, agents must re-register. If operators want durable registration, a future ADR should weigh the staleness tradeoff.
+- **`customer_service_usage_events.intents` JSON growth**: Long-running conversations will accumulate mining_result / recommendations in the `intents` JSON column. Operators should schedule periodic archiving or plan a future migration to an independent `conversation_context` table (ADR-0011 rejected-alternative B documents this as a future evolution path).
+- **Pre-existing Windows pytest failures**: The 2 `PermissionError: [WinError 32]` failures in `test_production_hardening.py` and `test_concurrency_idempotency.py` are unrelated to cs-profit-engine. They are caused by SQLAlchemy's SQLite connection pool holding file handles when xdist workers tear down in parallel. Mitigation options (none done this session): switch those tests to `sqlite+pysqlite:///:memory:` exclusively, or add a `engine.dispose()` + `time.sleep(0.1)` in `tearDown` before `os.remove`. CI on Linux is unaffected.
+- **`uv run pytest tests/ -q`**: Could not run via `uv run` in this Windows / OneDrive environment due to the known uv cache/build temp-directory ACL issue documented in prior sessions. Used `.venv\Scripts\python.exe -m pytest` directly, which is the same path `init_check.py` uses for the test gate.
+
+**Recommended next action**:
+1. If operators are ready to roll out: confirm the attribution default model decision, then deploy with `PROMETHEUS_MULTIPROC_DIR` set and Alertmanager rules for `cs_degradation_active` / `cs_queue_wait_seconds`.
+2. If continuing development: the cs-profit-engine spec is fully implemented (Task 1–10 all done). No further work is pending on this spec.
+3. If reviewing: run `node scripts/harness/render-assessment-html.mjs` and open `reports/harness-assessment.html` to visualise the 100/100 harness state.

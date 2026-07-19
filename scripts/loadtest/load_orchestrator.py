@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import httpx
+from security import create_dev_jwt
 
 # Add src to path
 SRC = Path(__file__).resolve().parent.parent.parent / "src"
@@ -33,11 +34,16 @@ async def load_test(concurrency: int, duration: int) -> None:
     errors = 0
     total = 0
 
-    async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+    # Generate a dev JWT with analytics role (has read + orchestrator perms via admin).
+    # Use admin role to cover both /api/orders (order:read) and /api/orchestrator/respond.
+    jwt_token = create_dev_jwt("loadtest-user", "admin")
+    headers = {"Authorization": f"Bearer {jwt_token}"}
+
+    async with httpx.AsyncClient(base_url=BASE_URL, timeout=30, headers=headers) as client:
         # Seed: get an order ID from the API
         resp = await client.get("/api/orders?limit=1")
         if resp.status_code != 200:
-            print(f"ERROR: Cannot reach API at {BASE_URL}. Is the server running?")
+            print(f"ERROR: Cannot reach API at {BASE_URL} (status={resp.status_code}). Is the server running?")
             return
         orders = resp.json().get("orders", [])
         if not orders:

@@ -31,6 +31,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "complaint": {"audit:create"},
     "human_handoff": {"audit:create"},
     "data_analysis": {"analytics:read"},
+    "recommendation": {"recommendation:write"},
+    "analytics": {"analytics:read", "analytics:write"},
 }
 
 READ_PERMISSIONS = {

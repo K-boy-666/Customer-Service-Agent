@@ -89,6 +89,31 @@ class RuleBasedIntentDispatcher:
     )
     work_order_keywords = ("工单", "ticket", "进度", "派单")
     handoff_keywords = ("人工", "真人", "转人工", "human", "representative")
+    # SubTask 6.4: L1 internal agents (not customer-facing). Routed by the
+    # Orchestrator after the customer-facing intents; never dispatched to a
+    # customer. ``_handler_for`` returns None for these intents so the
+    # runtime skips them — they exist as routing signals for the profit-engine
+    # hooks (async demand mining + sync recommendation generation).
+    recommendation_keywords = (
+        "推荐",
+        "搭配",
+        "交叉销售",
+        "向上销售",
+        "recommend",
+        "cross-sell",
+        "up-sell",
+    )
+    analytics_keywords = (
+        "归因",
+        "ROI",
+        "转化率",
+        "漏斗",
+        "看板",
+        "attribution",
+        "funnel",
+        "conversion",
+        "dashboard",
+    )
     injection_markers = ("ignore previous instructions", "忽略之前", "system prompt", "developer message")
 
     def analyze(self, message: str, context: dict[str, Any] | None = None) -> DispatchResult:
@@ -203,6 +228,36 @@ class RuleBasedIntentDispatcher:
                 )
             )
 
+        # SubTask 6.4: recommendation / analytics intents. These are L1
+        # internal agents (not customer-facing). They are appended AFTER the
+        # customer-facing intents so they never displace a primary business
+        # route. ``_handler_for`` in the runtime returns None for these
+        # intents, so they are detected as routing signals but skipped by
+        # the agent-dispatch loop — the profit-engine hooks consume them.
+        recommendation_matches = self._matches(text, self.recommendation_keywords)
+        if recommendation_matches:
+            intents.append(
+                DispatchIntent(
+                    "recommendation",
+                    0.7,
+                    "recommendation-agent",
+                    "Detected cross-sell / up-sell / recommendation signal.",
+                    recommendation_matches,
+                )
+            )
+
+        analytics_matches = self._matches(text, self.analytics_keywords)
+        if analytics_matches:
+            intents.append(
+                DispatchIntent(
+                    "analytics",
+                    0.7,
+                    "analytics-agent",
+                    "Detected attribution / ROI / funnel / dashboard signal.",
+                    analytics_matches,
+                )
+            )
+
         if not intents:
             intents.append(
                 DispatchIntent(
@@ -246,6 +301,8 @@ class RuleBasedIntentDispatcher:
             "after_sales",
             "order_inquiry",
             "consultation",
+            "recommendation",
+            "analytics",
         ]
         by_intent: dict[str, DispatchIntent] = {}
         for intent in intents:

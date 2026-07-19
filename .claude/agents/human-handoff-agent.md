@@ -313,6 +313,68 @@ Memory is one of several persistence mechanisms available to you as you assist t
 
 - Since this memory is project-scope and shared with your team via version control, tailor your memories to this project
 
+## 主动转人工触发规则（Task 8.1 — cs-profit-engine）
+
+在原有"客户显式请求 / L3 紧急触发 / 复杂场景被动转人工"之外，本 Agent 现在额外承担一条**主动转人工**通道：在 Orchestrator 完成 demand-mining 之后，当满足下列条件时立即准备 handoff payload 并通知坐席。
+
+### 触发条件
+
+| 维度 | 阈值 | 来源 |
+|---|---|---|
+| `user_value_tier` | `== "vip"` | `user_profile_service.get_profile().value.tier` |
+| `intent_confidence` | `< 0.7` | `demand_mining_service.mine_demand().intent_confidence` |
+
+**两条条件同时满足才触发**。非 vip 用户即使 `intent_confidence` 极低也不走主动通道——他们仍然走原有的显式请求 / L3 紧急 / 投诉循环升级流程。
+
+阈值定义在 `src/human_handoff_upgrade.py`：
+```python
+PROACTIVE_HANDOFF_VALUE_TIER = "vip"
+PROACTIVE_HANDOFF_CONFIDENCE_THRESHOLD = 0.7
+```
+
+### 触发判断函数
+
+```python
+# src/human_handoff_upgrade.py
+should_proactively_handoff(user_value_tier, intent_confidence) -> bool
+evaluate_proactive_handoff(session, user_id, mining_result=None) -> dict
+build_handoff_payload(session, user_id, conversation_id) -> dict
+```
+
+`evaluate_proactive_handoff` 返回：
+```python
+{
+  "should_handoff": bool,
+  "reason": "vip_low_confidence" | "no_trigger",
+  "payload": {
+    "user_profile": { ...360° 画像... },
+    "recommendations": [ ...最近 5 条推荐... ],
+    "conversation_summary": "...最近 10 条 usage event 摘要...",
+  } | None,
+}
+```
+
+### Payload 结构
+
+handoff payload 由 `build_handoff_payload` 构建，确保坐席接手时立刻获得：
+
+1. **user_profile**：来自 `user_profile_service.get_profile`，包含 `display_name`、`primary_customer_id`、`aggregated_attrs`、近 30 天 `intent_tags`、`value`（score + tier + RFM 明细）。缺失时为空 dict（仍交付稀疏 payload，不阻塞）。
+2. **recommendations**：来自 `recommendation_service.list_user_recommendations(limit=5)`，按 `created_at desc` 取最近 5 条，每条含 `recommendation_id` / `recommend_type` / `target_sku` / `script` / `expected_conversion_rate` / `opportunity_score`。坐席可一键采纳为话术。
+3. **conversation_summary**：从 `customer_service_usage_events` 提取最近 10 条事件，按时间正序拼接为多行文本。每行含 `status` / `emotional_level` / `needs_human` / `intents` / `dispatched_agents`，结构稳定、便于扫描。`conversation_id` 缺失或无事件时为空字符串。
+
+### 与原流程的关系
+
+- 原"L3 紧急触发"（自伤/自杀/暴力/法律威胁）保持**最高优先级**：触发时立即转接，不走主动评估。
+- 原"客户显式请求转人工"保持**次优先级**：直接进入 handoff 流程。
+- **新增主动转人工通道**仅在上述两条未触发、且 Orchestrator 已完成 demand-mining 后才评估，避免覆盖更明确的信号。
+- 触发后仍按 ADR-0002 通信协议输出 `【处理结果】/【客户回复】/【内部备注】` 三段式，并在 `【内部备注】` 中标注 `proactive_handoff=vip_low_confidence`，方便运营回溯。
+
+### 协作约定
+
+- Orchestrator 在 `_run_profit_engine_hooks` 中调用 `evaluate_proactive_handoff`；触发时把 payload 注入到响应的 `handoff_package` 字段，并设置 `needs_human=True`。
+- `agent_assist_service.generate_assist_suggestions` 会在会话进入人工后接管，继续为坐席生成实时建议（话术 / 知识 / 交叉销售），见 Task 8.2。
+- `agent_routing.AgentRouter` 负责把 vip 用户的主动转人工请求路由到资深坐席，见 Task 8.3。
+
 ## MEMORY.md
 
 Your MEMORY.md is currently empty. When you save new memories, they will appear here.

@@ -199,6 +199,123 @@
         "No test files or conftest.py modified for xdist (process-level isolation)"
       ],
       "verified_by": "tests/test_metrics_prometheus.py, tests/test_production_hardening.py::ProductionHardeningTest::test_metrics_includes_histogram"
+    },
+    "unified-user-profile": {
+      "title": "Unified user profile service (cs-profit-engine Task 2)",
+      "status": "done",
+      "description": "Aggregates multi-platform user identity (phone / email / open_id / customer_id), behavior, and conversation history into a 360° user view: basic attributes + recent 30-day intent tags + value tier (low / medium / high / vip) via RFM + interaction weighting",
+      "depends_on": [],
+      "done_criteria": [
+        "user_profile_service supports merge_identity / update_profile / update_intent_tag / get_profile / compute_value_score",
+        "Multi-platform identity merge follows phone > email > open_id > customer_id priority",
+        "Intent tags update within 5 seconds of conversation event",
+        "Value scoring outputs low / medium / high / vip four-tier classification (RFM + interaction weighting)",
+        "Migration 0005_profit_engine_schema creates user_profile / user_identity / user_intent_tag / user_value_score tables idempotently on SQLite and MySQL"
+      ],
+      "verified_by": "tests/test_user_profile_service.py, tests/test_profit_engine_migration.py"
+    },
+    "demand-mining-engine": {
+      "title": "Demand mining engine (cs-profit-engine Task 3)",
+      "status": "done",
+      "description": "Pure functional service that mines cross-sell / up-sell opportunities from a customer conversation: rule-based intent classification (no LLM), order-co-occurrence product graph, opportunity_score (0-1) scoring; never writes to DB",
+      "depends_on": ["unified-user-profile"],
+      "done_criteria": [
+        "classify_intent returns intent label + confidence (keyword-based, deterministic)",
+        "get_product_relations queries order-item co-occurrence graph with top-N limit",
+        "score_opportunity outputs 0-1 score with vip boost and category-match bonus, clamped to 1.0",
+        "mine_demand returns intent + opportunities + intent_confidence; missing profile defaults to low tier",
+        "logistics_inquiry and complaint intents excluded from opportunity mining (no cross-sell during complaints)"
+      ],
+      "verified_by": "tests/test_demand_mining_service.py"
+    },
+    "proactive-recommendation": {
+      "title": "Proactive recommendation service + recommendation-agent (cs-profit-engine Task 4)",
+      "status": "done",
+      "description": "Converts mined opportunities into ≤ 3 customer-facing recommendations with话术 (script) + expected conversion rate; records funnel events (exposure / click / consult / order) with 24-hour dedup; L1 recommendation-agent wraps MCP tools",
+      "depends_on": ["demand-mining-engine"],
+      "done_criteria": [
+        "generate_recommendations filters opportunity_score > 0.6, sorts by score desc, takes top 3",
+        "Each recommendation has recommendation_id (rec_<uuid4_hex[:16]>), script, expected_conversion_rate (clamped to [0, 0.95])",
+        "record_funnel_event deduplicates within 24-hour window per (conversation_id, recommendation_id, event_type)",
+        "recommendation_agent enforces recommendation:write permission (L1) and returns empty customer_reply (Orchestrator composes customer-facing reply)",
+        "Agent system prompt at .claude/agents/recommendation-agent.md declares L1 permission tier"
+      ],
+      "verified_by": "tests/test_recommendation_service.py"
+    },
+    "revenue-attribution": {
+      "title": "Revenue attribution service + analytics-agent (cs-profit-engine Task 5)",
+      "status": "done",
+      "description": "Multi-touch revenue attribution across 24-hour window with four models (first_touch / last_touch / linear / time_decay, default last_touch); ROI computation (attributed revenue vs human + AI cost) with Top-5 Agent / 话术 rankings; L1 analytics-agent wraps MCP tools",
+      "depends_on": ["unified-user-profile"],
+      "done_criteria": [
+        "attribute_order distributes total_amount across touch points within 24-hour window using selected model",
+        "Weights normalized to sum to 1.0 so attributed_amount sums to total_order_amount exactly",
+        "time_decay model uses 7-day half-life (TIME_DECAY_HALF_LIFE_DAYS = 7)",
+        "compute_roi returns attributed_revenue, service_cost (human ¥5/event + ai ¥0.1/event), roi ratio, top_agents, top_scripts",
+        "get_attribution_summary aggregates across all four models with distinct order count to avoid double-counting",
+        "analytics_agent enforces analytics:write permission (L1) and returns empty customer_reply",
+        "Agent system prompt at .claude/agents/analytics-agent.md declares L1 permission tier"
+      ],
+      "verified_by": "tests/test_attribution_service.py"
+    },
+    "profit-engine-orchestrator-integration": {
+      "title": "Orchestrator profit-engine hooks integration (cs-profit-engine Task 6)",
+      "status": "done",
+      "description": "Embeds async demand-mining + async attribution hooks + synchronous recommendation generation into the Orchestrator main response path via ThreadPoolExecutor (max_workers=4); 2s timeout protection; mining result written to customer_service_usage_events.intents JSON (option B, no schema change)",
+      "depends_on": ["demand-mining-engine", "proactive-recommendation", "revenue-attribution"],
+      "done_criteria": [
+        "profit_engine_hooks.run_demand_mining_async / run_attribution_async return Futures that never raise (exceptions caught + logged)",
+        "submit_recommendation_generation enforces 2s timeout via Future.result(timeout=2.0); on timeout returns empty list",
+        "Dispatcher routes recommendation / analytics intents; Orchestrator invokes them as L1 sub-agents",
+        "Mining result + recommendations appended to latest CustomerServiceUsageEvent.intents JSON field (option B, no schema change)",
+        "Hook failures never break the main customer response (verified by test_hook_failure_does_not_break_response)",
+        "shutdown_executor_for_tests(wait=True) prevents lingering threads across DB engine resets"
+      ],
+      "verified_by": "tests/test_orchestrator_profit_integration.py"
+    },
+    "peak-load-degradation": {
+      "title": "Peak-load dynamic scheduling + degradation policy (cs-profit-engine Task 7)",
+      "status": "done",
+      "description": "LoadMonitor (thread-safe, in-flight requests + 1000-sample wait-time sliding window) triggers degradation when load > 80% or queue wait > 30s; degradation_policy sheds profit-engine internal intents (recommendation / analytics) only — L0/L1/L2 customer intents always processed; Prometheus metrics cs_queue_wait_seconds / cs_degradation_active / cs_active_requests / cs_load_percent",
+      "depends_on": [],
+      "done_criteria": [
+        "LoadMonitor.acquire / release update cs_active_requests gauge and sliding-window wait times",
+        "is_degradation_active returns True when load > 80% (CS_LOAD_THRESHOLD) or avg wait > 30s (CS_QUEUE_WAIT_THRESHOLD)",
+        "degradation_policy.should_process returns True for L0/L1/L2 business intents even under degradation",
+        "degradation_policy.should_skip_recommendation returns True under degradation (only profit-engine internal intents shed)",
+        "Prometheus metrics cs_queue_wait_seconds (Histogram), cs_degradation_active (Gauge), cs_active_requests (Gauge), cs_load_percent (Gauge) exported",
+        "Thresholds env-overridable: CS_MAX_CONCURRENT, CS_QUEUE_WAIT_THRESHOLD, CS_LOAD_THRESHOLD"
+      ],
+      "verified_by": "tests/test_peak_load_degradation.py"
+    },
+    "human-handoff-upgrade": {
+      "title": "Proactive human-handoff + agent-assist + load-balancing router (cs-profit-engine Task 8)",
+      "status": "done",
+      "description": "Proactive handoff trigger (vip + intent_confidence < 0.7); agent-assist suggestions (script / knowledge / cross_sell, one per type, AgentAssistEvent recording for attribution); in-memory agent load-balancing router (skill match + vip → senior + lower load + agent_id tie-breaker, thread-safe)",
+      "depends_on": ["profit-engine-orchestrator-integration", "proactive-recommendation"],
+      "done_criteria": [
+        "should_proactively_handoff returns True iff user_value_tier == 'vip' AND intent_confidence < 0.7",
+        "build_handoff_payload includes 360° profile + recent 5 recommendations + 10-turn conversation summary",
+        "agent_assist_service.generate_assist_suggestions returns ≤ 1 suggestion per type (script / knowledge / cross_sell)",
+        "AgentAssistEvent row created on agent adoption (for attribution pipeline credit)",
+        "AgentRouter routes by skill match + vip→senior + lower load_rate + agent_id asc tie-breaker; thread-safe (threading.Lock)",
+        "human-handoff-agent.md system prompt updated with proactive trigger rule"
+      ],
+      "verified_by": "tests/test_human_handoff_upgrade.py"
+    },
+    "profit-dashboard-api": {
+      "title": "Profit dashboard REST API (cs-profit-engine Task 9)",
+      "status": "done",
+      "description": "Three v1 endpoints on existing FastAPI app (order_api.py): GET /api/v1/profit-dashboard (KPI + revenue + insights, < 2s), GET /api/v1/recommendations/funnel (stage counts + conversion rates), GET /api/v1/attributions (records + multi-model summary); analytics:read permission; Prometheus dashboard_latency_seconds histogram",
+      "depends_on": ["revenue-attribution", "proactive-recommendation", "profit-engine-orchestrator-integration"],
+      "done_criteria": [
+        "GET /api/v1/profit-dashboard returns KPI + revenue + insights blocks, response time < 2s",
+        "GET /api/v1/recommendations/funnel returns exposure/click/consult/order stage counts and conversion rates",
+        "GET /api/v1/attributions supports model parameter switching across first_touch / last_touch / linear / time_decay",
+        "All three endpoints require analytics:read permission and use LIMIT_READ (120/min) rate limit",
+        "Prometheus dashboard_latency_seconds histogram (labels=endpoint) covers all three endpoints with buckets spanning 10ms to 10s"
+      ],
+      "verified_by": "tests/test_profit_dashboard_api.py"
     }
   },
   "planned": [],
@@ -216,6 +333,14 @@
     "concurrency-load-testing",
     "ci-tooling-hardening",
     "structured-logging-rate-limiting",
-    "prometheus-client-xdist"
+    "prometheus-client-xdist",
+    "unified-user-profile",
+    "demand-mining-engine",
+    "proactive-recommendation",
+    "revenue-attribution",
+    "profit-engine-orchestrator-integration",
+    "peak-load-degradation",
+    "human-handoff-upgrade",
+    "profit-dashboard-api"
   ]
 }

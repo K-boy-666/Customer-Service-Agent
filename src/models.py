@@ -248,3 +248,155 @@ class OtpChallenge(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# CS Profit Engine — user profile, recommendation, funnel, attribution
+# ---------------------------------------------------------------------------
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profile"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, index=True)
+    primary_customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id"), nullable=True, index=True
+    )
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    aggregated_attrs: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=now, onupdate=now, nullable=False
+    )
+
+
+class UserIdentity(Base):
+    __tablename__ = "user_identity"
+    __table_args__ = (
+        UniqueConstraint(
+            "platform", "identity_type", "identity_value", name="uq_user_identity_platform_value"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_profile.user_id"), nullable=False, index=True
+    )
+    platform: Mapped[str] = mapped_column(String(40), nullable=False)
+    identity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    identity_value: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+
+
+class UserIntentTag(Base):
+    __tablename__ = "user_intent_tag"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_profile.user_id"), nullable=False, index=True
+    )
+    tag: Mapped[str] = mapped_column(String(120), nullable=False)
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="conversation")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False, index=True)
+
+
+class UserValueScore(Base):
+    __tablename__ = "user_value_score"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_profile.user_id"), nullable=False, index=True
+    )
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    tier: Mapped[str] = mapped_column(String(20), nullable=False)
+    rfm_r: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    rfm_f: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    rfm_m: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    interaction_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False, index=True)
+
+
+class Recommendation(Base):
+    __tablename__ = "recommendation"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    recommendation_id: Mapped[str] = mapped_column(
+        String(80), nullable=False, unique=True, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("user_profile.user_id"), nullable=False, index=True
+    )
+    conversation_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    recommend_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    target_ref: Mapped[str] = mapped_column(String(120), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    script: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    expected_conversion_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    opportunity_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=now, onupdate=now, nullable=False
+    )
+
+
+class FunnelEvent(Base):
+    __tablename__ = "funnel_event"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    recommendation_id: Mapped[str] = mapped_column(
+        ForeignKey("recommendation.recommendation_id"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    order_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False, index=True)
+
+
+class TouchPoint(Base):
+    __tablename__ = "touch_point"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    recommendation_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    touch_time: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False, index=True)
+    touch_type: Mapped[str] = mapped_column(String(40), nullable=False, default="conversation")
+
+
+class AttributionRecord(Base):
+    __tablename__ = "attribution_record"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    attribution_id: Mapped[str] = mapped_column(
+        String(80), nullable=False, unique=True, index=True
+    )
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    agent_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    recommendation_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    model: Mapped[str] = mapped_column(String(40), nullable=False)
+    attributed_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    total_order_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    attributed_at: Mapped[datetime] = mapped_column(
+        DateTime, default=now, nullable=False, index=True
+    )
+
+
+class AgentAssistEvent(Base):
+    __tablename__ = "agent_assist_event"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    assist_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    adopted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False, index=True)

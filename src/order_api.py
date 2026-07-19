@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
@@ -14,10 +16,11 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_l
 from pydantic import BaseModel, Field
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 import analytics_service
+import attribution_service
 import config as runtime_config
 import database
 import seed_data
@@ -30,6 +33,14 @@ from metrics import (
     RETURNS_TOTAL,
     SURVEYS_TOTAL,
     TICKETS_TOTAL,
+    attribution_revenue_total,
+    dashboard_latency_seconds,
+)
+from models import (
+    CustomerServiceUsageEvent,
+    FunnelEvent,
+    Recommendation,
+    SatisfactionSurvey,
 )
 from orchestrator_api import respond_to_customer_message
 from rate_limit import LIMIT_ORCHESTRATOR, LIMIT_OTP, LIMIT_READ, LIMIT_WRITE, limiter
@@ -807,3 +818,296 @@ def list_surveys(
     session: Session = Depends(db_session),
 ):
     return svc.list_surveys(session, actor, customer_id, rating, limit, offset)
+
+
+# ---------------------------------------------------------------------------
+# Profit-engine value dashboard API (Task 9)
+#
+# Three v1 endpoints that expose the cs-profit-engine outputs to operators:
+#   GET /api/v1/profit-dashboard       — KPI + revenue + insights block
+#   GET /api/v1/recommendations/funnel — conversion funnel stages + rates
+#   GET /api/v1/attributions           — attribution records + multi-model summary
+#
+# All three require the ``analytics:read`` permission (granted to both the
+# ``data_analysis`` and ``analytics`` roles per security.py) and record
+# Prometheus latency observations via ``dashboard_latency_seconds``.
+# ---------------------------------------------------------------------------
+
+
+def _date_start(value: str) -> datetime:
+    """Parse an ISO date string (YYYY-MM-DD) to a start-of-day datetime."""
+    return datetime.combine(date.fromisoformat(value), dtime.min)
+
+
+def _date_end_inclusive(value: str) -> datetime:
+    """Parse an ISO date string (YYYY-MM-DD) to an end-of-day datetime.
+
+    Using 23:59:59.999999 so the ``<=`` filters used by attribution_service
+    and the dashboard queries cover the entire end date rather than just
+    midnight.
+    """
+    return datetime.combine(date.fromisoformat(value), dtime.max)
+
+
+@app.get("/api/v1/profit-dashboard", tags=["analytics"])
+@limiter.limit(LIMIT_READ)
+def get_profit_dashboard(
+    request: Request,
+    start: str = Query(..., description="ISO date YYYY-MM-DD"),
+    end: str = Query(..., description="ISO date YYYY-MM-DD"),
+    model: str = Query("last_touch", description="Attribution model"),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+) -> dict:
+    """Value dashboard: KPI + revenue + insights.
+
+    Returns three blocks:
+    - ``kpi``: response time, resolution rate, CSAT, total conversations.
+    - ``revenue``: attributed revenue, service cost (human + ai), ROI,
+      conversion rate (attributed orders / total conversations).
+    - ``insights``: top agents, top scripts, top opportunities — all
+      derived from real DB data via ``attribution_service.compute_roi``
+      and a grouped ``Recommendation`` query.
+    """
+    require_permission(actor, "analytics:read")
+    t0 = time.perf_counter()
+    try:
+        start_dt = _date_start(start)
+        end_dt = _date_end_inclusive(end)
+
+        # -- KPI block ----------------------------------------------------
+        usage_events = (
+            session.query(CustomerServiceUsageEvent)
+            .filter(
+                CustomerServiceUsageEvent.created_at >= start_dt,
+                CustomerServiceUsageEvent.created_at <= end_dt,
+            )
+            .all()
+        )
+        conversation_ids = {e.conversation_id for e in usage_events if e.conversation_id}
+        total_conversations = len(conversation_ids)
+        # The orchestrator writes status="success" when the customer's
+        # request was resolved without escalation; treat that as resolved.
+        resolved = sum(1 for e in usage_events if e.status == "success")
+        resolution_rate = resolved / len(usage_events) if usage_events else 0.0
+        # No response-time field on the usage event; the spec allows
+        # returning 0 when no field is available.
+        response_time_avg = 0.0
+
+        surveys = (
+            session.query(SatisfactionSurvey)
+            .filter(
+                SatisfactionSurvey.created_at >= start_dt,
+                SatisfactionSurvey.created_at <= end_dt,
+            )
+            .all()
+        )
+        csat_avg = (
+            sum(s.rating for s in surveys) / len(surveys) if surveys else 0.0
+        )
+
+        # -- Revenue block ------------------------------------------------
+        roi = attribution_service.compute_roi(
+            session,
+            start=start_dt.isoformat(),
+            end=end_dt.isoformat(),
+            model=model,
+        )
+        summary = attribution_service.get_attribution_summary(
+            session,
+            start=start_dt.isoformat(),
+            end=end_dt.isoformat(),
+        )
+        conversion_rate = (
+            summary["total_orders"] / total_conversations
+            if total_conversations > 0
+            else 0.0
+        )
+
+        # -- Insights block: top_opportunities from Recommendation rows ---
+        rec_rows = (
+            session.query(Recommendation)
+            .filter(
+                Recommendation.created_at >= start_dt,
+                Recommendation.created_at <= end_dt,
+            )
+            .all()
+        )
+        opp_by_sku: dict[str, dict[str, Any]] = {}
+        for r in rec_rows:
+            sku = r.target_ref or ""
+            if not sku:
+                continue
+            bucket = opp_by_sku.setdefault(
+                sku,
+                {
+                    "target_sku": sku,
+                    "opportunity_score": 0.0,
+                    "count": 0,
+                },
+            )
+            bucket["opportunity_score"] += float(r.opportunity_score or 0.0)
+            bucket["count"] += 1
+        top_opportunities = sorted(
+            opp_by_sku.values(),
+            key=lambda x: -x["opportunity_score"],
+        )[:5]
+
+        return {
+            "kpi": {
+                "response_time_avg_seconds": response_time_avg,
+                "resolution_rate": resolution_rate,
+                "csat_avg": csat_avg,
+                "total_conversations": total_conversations,
+            },
+            "revenue": {
+                "attributed_revenue": roi["attributed_revenue"],
+                "service_cost": roi["service_cost"],
+                "roi": roi["roi"],
+                "conversion_rate": conversion_rate,
+            },
+            "insights": {
+                "top_agents": roi["top_agents"],
+                "top_scripts": roi["top_scripts"],
+                "top_opportunities": top_opportunities,
+            },
+            "time_range": {"start": start, "end": end, "model": model},
+        }
+    finally:
+        latency = time.perf_counter() - t0
+        dashboard_latency_seconds.labels(
+            endpoint="/api/v1/profit-dashboard"
+        ).observe(latency)
+
+
+@app.get("/api/v1/recommendations/funnel", tags=["analytics"])
+@limiter.limit(LIMIT_READ)
+def get_recommendations_funnel(
+    request: Request,
+    start: str = Query(..., description="ISO date YYYY-MM-DD"),
+    end: str = Query(..., description="ISO date YYYY-MM-DD"),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+) -> dict:
+    """Recommendation conversion funnel: stages + conversion rates.
+
+    Counts ``FunnelEvent`` rows grouped by ``event_type`` in the date
+    range, then computes the four conversion rates:
+    ``exposure_to_click``, ``click_to_consult``, ``consult_to_order``,
+    and the overall ``exposure_to_order`` rate. Missing stages report 0
+    so the funnel shape is always well-defined.
+    """
+    require_permission(actor, "analytics:read")
+    t0 = time.perf_counter()
+    try:
+        start_dt = _date_start(start)
+        end_dt = _date_end_inclusive(end)
+
+        rows = (
+            session.query(FunnelEvent.event_type, func.count(FunnelEvent.id))
+            .filter(
+                FunnelEvent.created_at >= start_dt,
+                FunnelEvent.created_at <= end_dt,
+            )
+            .group_by(FunnelEvent.event_type)
+            .all()
+        )
+        counts = {event_type: int(count) for event_type, count in rows}
+        exposure = counts.get("exposure", 0)
+        click = counts.get("click", 0)
+        consult = counts.get("consult", 0)
+        order = counts.get("order", 0)
+
+        def _rate(numerator: int, denominator: int) -> float:
+            return numerator / denominator if denominator > 0 else 0.0
+
+        return {
+            "stages": [
+                {"stage": "exposure", "count": exposure},
+                {"stage": "click", "count": click},
+                {"stage": "consult", "count": consult},
+                {"stage": "order", "count": order},
+            ],
+            "conversion_rates": {
+                "exposure_to_click": _rate(click, exposure),
+                "click_to_consult": _rate(consult, click),
+                "consult_to_order": _rate(order, consult),
+                "overall": _rate(order, exposure),
+            },
+            "time_range": {"start": start, "end": end},
+        }
+    finally:
+        latency = time.perf_counter() - t0
+        dashboard_latency_seconds.labels(
+            endpoint="/api/v1/recommendations/funnel"
+        ).observe(latency)
+
+
+@app.get("/api/v1/attributions", tags=["analytics"])
+@limiter.limit(LIMIT_READ)
+def list_attributions_api(
+    request: Request,
+    start: str | None = Query(None, description="ISO date YYYY-MM-DD"),
+    end: str | None = Query(None, description="ISO date YYYY-MM-DD"),
+    model: str = Query("last_touch", description="Attribution model"),
+    user_id: str | None = Query(None),
+    order_id: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    actor: Actor = Depends(actor_dependency),
+    session: Session = Depends(db_session),
+) -> dict:
+    """Attribution records + multi-model summary.
+
+    ``records`` is the filtered list from ``attribution_service.list_attributions``
+    (filtered by model / user_id / order_id / date range / limit).
+    ``summary`` is the multi-model revenue breakdown from
+    ``attribution_service.get_attribution_summary`` for the same date
+    range (or an empty-shaped summary when no dates are supplied).
+    """
+    require_permission(actor, "analytics:read")
+    t0 = time.perf_counter()
+    try:
+        start_dt_str = _date_start(start).isoformat() if start else None
+        end_dt_str = _date_end_inclusive(end).isoformat() if end else None
+
+        records = attribution_service.list_attributions(
+            session,
+            start=start_dt_str,
+            end=end_dt_str,
+            model=model,
+            user_id=user_id,
+            order_id=order_id,
+            limit=limit,
+        )
+
+        if start and end:
+            summary = attribution_service.get_attribution_summary(
+                session,
+                start=start_dt_str,
+                end=end_dt_str,
+            )
+            # Inc the cumulative revenue counter once per query. The
+            # counter tracks total revenue observed via the API across
+            # all queries — useful for monitoring dashboard usage.
+            total_rev = float(summary.get("total_revenue", 0.0) or 0.0)
+            if total_rev > 0:
+                attribution_revenue_total.labels(model=model).inc(total_rev)
+        else:
+            summary = {
+                "models": {
+                    m: {"attributed_revenue": 0.0, "record_count": 0}
+                    for m in attribution_service.ATTRIBUTION_MODELS
+                },
+                "total_orders": 0,
+                "total_revenue": 0.0,
+            }
+
+        return {
+            "records": records,
+            "summary": summary,
+        }
+    finally:
+        latency = time.perf_counter() - t0
+        dashboard_latency_seconds.labels(
+            endpoint="/api/v1/attributions"
+        ).observe(latency)

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import pytest
 
 import database
+import profit_engine_hooks
 import seed_data
 from models import Order
 from numbering import reset_for_tests
@@ -44,6 +45,10 @@ class LoadOrchestratorTest(unittest.TestCase):
         self.orders = self._load_orders()
 
     def tearDown(self) -> None:
+        # Shut down profit_engine_hooks' ThreadPoolExecutor before resetting
+        # the DB engine. Worker threads hold SQLite file handles via
+        # SingletonThreadPool; without this, os.remove fails with WinError 32.
+        profit_engine_hooks.shutdown_executor_for_tests()
         database.reset_engine_for_tests("sqlite+pysqlite:///:memory:")
         for suffix in ("", "-wal", "-shm"):
             path = f"{self.db_path}{suffix}"

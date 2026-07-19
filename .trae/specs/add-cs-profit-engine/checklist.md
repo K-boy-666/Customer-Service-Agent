@@ -1,0 +1,30 @@
+- [x] 数据模型迁移脚本 `0005_profit_engine_schema.py` 可在 SQLite 与 MySQL 上幂等执行
+- [x] 用户画像服务支持多平台身份合并（手机号 / 邮箱 / open_id 优先级匹配）
+- [x] 意图标签在对话事件后 5 秒内更新落库
+- [x] 价值评分算法输出 low / medium / high / vip 四层
+- [x] 需求挖掘引擎能识别典型交叉销售 / 向上销售机会，输出 opportunity_score（0-1）
+- [x] 需求挖掘异步执行，不阻塞 Orchestrator 主响应路径
+- [x] 推荐服务在 opportunity_score > 0.6 时生成 ≤ 3 条推荐（含话术与预期转化率）
+- [x] 转化漏斗事件（exposure / click / consult / order）正确记录并关联 session / user / recommendation
+- [x] 同一会话内同一推荐 24 小时内不重复曝光
+- [x] 营收归因系统支持 first_touch / last_touch / linear / time_decay 四种模型
+- [x] 订单事件触发自动归因，24 小时窗口内有效
+- [x] ROI 计算逻辑正确（归因营收 / 客服成本），含 Top Agent / 话术排序
+- [x] Orchestrator 集成异步挖掘钩子与归因事件记录，主响应未被阻塞
+- [x] `dispatcher.py` 新增 recommendation / analytics 路由并可被 Orchestrator 调用
+- [x] 挖掘结果写入 `conversation_state`，供后续轮次与坐席辅助使用
+- [x] 峰值负载 > 80% 或队列等待 > 30s 时自动启用降级策略
+- [x] Prometheus 新增 `cs_queue_wait_seconds`、`cs_degradation_active` 指标
+- [x] 主动转人工触发规则生效（vip + intent_confidence < 0.7）
+- [x] 坐席辅助推荐可一键采纳并记录 `agent_assist_event`
+- [x] 坐席负载均衡按负载 + 用户价值分层路由，vip 优先资深坐席
+- [x] `GET /api/v1/profit-dashboard` 响应时间 < 2s，返回 KPI + 营收 + 洞察三块
+- [x] `GET /api/v1/recommendations/funnel` 返回各阶段事件数与转化率
+- [x] `GET /api/v1/attributions?model=...` 支持四种模型切换
+- [x] recommendation-agent 与 analytics-agent 遵守 L1 权限约束（仅写内部记录，不直接面向客户）
+- [x] ADR-0011 文档完成，记录新增 L1 Agent / 异步钩子 / 归因模型决策
+- [x] `feature_list.json` 已更新，profit-engine 相关 feature 与依赖关系正确
+- [x] 全部测试通过：`uv run pytest tests/ -q` 返回 0
+- [x] `./init.cmd --check-only --skip-tests` 6 阶段无失败
+- [x] `node scripts/harness/validate-harness.mjs` 无新增 warning
+- [x] `progress.md` 与 `session-handoff.md` 已追加本次变更记录

@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import database
+import profit_engine_hooks
 import seed_data
 from models import CustomerServiceUsageEvent, Order, ReturnRequest, SatisfactionSurvey, Ticket
 from orchestrator_runtime import _CONVERSATION_STATES, CustomerServiceOrchestrator
@@ -37,6 +38,10 @@ class OrchestratorE2ETest(unittest.TestCase):
             session.close()
 
     def tearDown(self) -> None:
+        # Shut down profit_engine_hooks' ThreadPoolExecutor before resetting
+        # the DB engine. Worker threads hold SQLite file handles via
+        # SingletonThreadPool; without this, os.remove fails with WinError 32.
+        profit_engine_hooks.shutdown_executor_for_tests()
         database.reset_engine_for_tests("sqlite+pysqlite:///:memory:")
         for suffix in ("", "-wal", "-shm"):
             path = f"{self.db_path}{suffix}"

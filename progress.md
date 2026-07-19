@@ -1,16 +1,17 @@
 # Progress — 客服智能体 2.0
 
-> Last updated: 2026-07-01
+> Last updated: 2026-07-19
 > Active branch: `main`
 
 ## Current feature
 
-None active — all planned features are `done` (including P5 prometheus-client-xdist). See `feature_list.json` for the full inventory.
+None active — all planned features are `done` (including cs-profit-engine Task 1–10). See `feature_list.json` for the full inventory.
 
 ## Recent completions
 
 | Date | Feature | Commit | Evidence |
 |------|---------|--------|----------|
+| 2026-07-19 | AI 驱动客服利润引擎 (cs-profit-engine Task 1–10) | — | 9 new modules, 113 new tests, ADR-0011, 8 new feature_list.json entries |
 | 2026-07-01 | prometheus_client + pytest-xdist (P5 Phase C) | — | 84 passed, 14 subtests; coverage 76%; 3 new tests; 5x test speedup |
 | 2026-07-01 | Structured logging + API rate limiting (P4 Phase B) | — | 81 passed, 14 subtests; coverage 76%; structlog + slowapi; 10 new tests |
 | 2026-07-01 | CI & tooling hardening (P3 Phase A) | — | 71 passed, 14 subtests; coverage 75%; 7 improvements; 1 new test |
@@ -198,3 +199,83 @@ $ bash init.sh
   - `.\.venv\Scripts\mypy.exe src` -> Success: no issues found in 20 source files.
   - `.\init.cmd --check-only --skip-tests` -> no failures.
   - `node scripts/harness/validate-harness.mjs` -> 100/100, no new warnings.
+
+## AI 驱动客服利润引擎 (cs-profit-engine Task 1–10) - 2026-07-19
+
+将客服系统从「被动响应」升级为「主动创收」，新增 9 个源模块、9 张数据表、1 个 Alembic 迁移、1 个 ADR，扩展 ADR-0004 L1 权限分层。
+
+### 新增模块（9 个）
+
+| 模块 | 任务 | 职责 |
+|------|------|------|
+| `src/user_profile_service.py` | Task 2 | 统一用户画像（多平台身份合并、意图标签、价值分层 low/medium/high/vip） |
+| `src/demand_mining_service.py` | Task 3 | 需求挖掘引擎（规则意图分类、订单共现商品图谱、机会评分 0-1） |
+| `src/recommendation_service.py` | Task 4 | 主动推荐（≤3 条 / 含话术 / 预期转化率 / 24h 去重漏斗事件） |
+| `src/recommendation_agent.py` | Task 4 | L1 recommendation-agent MCP 工具封装（recommendation:write 权限） |
+| `src/attribution_service.py` | Task 5 | 营收归因（4 模型 / 24h 窗口 / ROI / Top Agent / Top 话术） |
+| `src/analytics_agent.py` | Task 5 | L1 analytics-agent MCP 工具封装（analytics:write 权限） |
+| `src/profit_engine_hooks.py` | Task 6 | Orchestrator 异步钩子（ThreadPoolExecutor max_workers=4 / 2s 超时保护） |
+| `src/degradation.py` | Task 7 | 峰值降级策略（L0/L1/L2 业务永不 shed，仅 shed profit-engine 内部 intent） |
+| `src/human_handoff_upgrade.py` + `src/agent_assist_service.py` + `src/agent_routing.py` | Task 8 | 主动转人工（vip + confidence < 0.7）+ 坐席辅助 + 负载均衡路由 |
+
+### 新增数据表与迁移
+
+- Alembic 迁移 `alembic/versions/0005_profit_engine_schema.py`，新增 9 张表：`user_profile` / `user_identity` / `user_intent_tag` / `user_value_score` / `recommendation` / `funnel_event` / `attribution_record` / `touch_point` / `agent_assist_event`。
+- SQLite 与 MySQL 双向兼容，幂等性由 `tests/test_profit_engine_migration.py` 覆盖（upgrade / downgrade / 重复 upgrade / 现有表保留）。
+
+### 新增测试用例（113 个）
+
+| 测试文件 | 测试数 |
+|---------|--------|
+| `tests/test_user_profile_service.py` | 9 |
+| `tests/test_demand_mining_service.py` | 16 |
+| `tests/test_recommendation_service.py` | 16 |
+| `tests/test_attribution_service.py` | 16 |
+| `tests/test_orchestrator_profit_integration.py` | 8 |
+| `tests/test_profit_engine_migration.py` | 4 |
+| `tests/test_peak_load_degradation.py` | 13 |
+| `tests/test_human_handoff_upgrade.py` | 19 |
+| `tests/test_profit_dashboard_api.py` | 12 |
+| **合计** | **113** |
+
+### ADR
+
+- 新增 `docs/adr/0011-cs-profit-engine.md`：记录 7 个核心决策（新增 L1 Agent / 异步钩子 / 归因模型 / 会话上下文存储 / 峰值降级 / 主动转人工 / 看板 API 复用）+ 3 个被否备选方案（asyncio / 独立上下文表 / 拒绝 L2 intent）。
+
+### feature_list.json 更新
+
+新增 8 个 feature（全部 status=done），`completed_order` 同步追加：
+`unified-user-profile` → `demand-mining-engine` → `proactive-recommendation` → `revenue-attribution` → `profit-engine-orchestrator-integration` → `peak-load-degradation` → `human-handoff-upgrade` → `profit-dashboard-api`。
+
+### 价值看板 API（Task 9）
+
+在 `src/order_api.py` 末尾新增 3 个 v1 端点（权限 `analytics:read`，限流 `LIMIT_READ` 120/min）：
+- `GET /api/v1/profit-dashboard` — KPI + 营收 + 洞察三块，响应时间 < 2s
+- `GET /api/v1/recommendations/funnel` — 各阶段事件数与转化率
+- `GET /api/v1/attributions` — 归因记录列表 + 多模型汇总（支持 `?model=first_touch|last_touch|linear|time_decay`）
+
+Prometheus 指标 `dashboard_latency_seconds`（Histogram，labels=endpoint）覆盖三个端点。
+
+### Peak-load 指标（Task 7）
+
+`src/metrics.py` 新增 4 个 Prometheus 指标：
+- `cs_queue_wait_seconds`（Histogram，buckets 10ms–60s）
+- `cs_degradation_active`（Gauge 0/1）
+- `cs_active_requests`（Gauge）
+- `cs_load_percent`（Gauge）
+
+阈值 env 可覆盖：`CS_MAX_CONCURRENT` / `CS_QUEUE_WAIT_THRESHOLD` / `CS_LOAD_THRESHOLD`。
+
+### Verification evidence
+
+- `uv run pytest tests/ -q`：测试结果详见 session-handoff.md（本次 Task 10.4 验证）。
+- `.\init.cmd --check-only --skip-tests`：6 阶段结果详见 session-handoff.md。
+- `node scripts/harness/validate-harness.mjs`：审计结果详见 session-handoff.md。
+
+### Open follow-ups
+
+- 运维需明确归因默认模型（当前 `last_touch`）；如需切换为 `time_decay` 或 `first_touch`，更新 `attribution_service.DEFAULT_MODEL` 或通过运营配置覆盖。
+- Prometheus 告警阈值需配置：`cs_degradation_active == 1` 持续 > 5min 触发告警；`cs_queue_wait_seconds` P95 > 30s 触发告警。
+- `PROMETHEUS_MULTIPROC_DIR` 在多 worker 部署时需配置（ADR-0010 待办延续）。
+- `agent_routing.AgentRouter` 状态不持久化，进程重启后坐席需重新注册（设计意图，避免路由到离线坐席）。
+- 长期对话的 `customer_service_usage_events.intents` JSON 字段可能膨胀，需运营定期归档或后续迁移到独立表（ADR-0011 备选方案 B 预留路径）。
